@@ -1,0 +1,1132 @@
+use std::collections::{BTreeSet, HashSet};
+use std::fmt::Write as _;
+use std::io;
+use std::path::Path;
+
+use crate::ast::{Action, Actor, Expr, Generator, Stmt, Type, VarDef};
+use crate::codegen::{CodeGenerator, Program};
+use crate::network_ffi::ffi::Instance;
+
+pub struct Naive;
+
+impl CodeGenerator for Naive {
+    fn name(&self) -> &'static str {
+        "naive"
+    }
+
+    fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()> {
+        let source = emit_program(program);
+        let tokens = source.parse().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("generated source failed to tokenize: {err}\n--- source ---\n{source}"),
+            )
+        })?;
+        super::write_rust(&out_dir.join("src").join("main.rs"), tokens)?;
+        super::write_cargo_toml(out_dir, &program.network.name, program.has_natives())?;
+        if program.has_natives() {
+            super::write_native_support(out_dir, program.native_sources)?;
+        }
+        Ok(())
+    }
+}
+
+fn emit_program(program: &Program<'_>) -> String {
+    let mut out = String::new();
+    out.push_str("#![allow(warnings)]\n");
+    out.push_str("use std::collections::VecDeque;\n\n");
+
+    let mut consts = String::new();
+    for unit in program.units {
+        for v in &unit.vars {
+            consts.push_str(&emit_const(v));
+        }
+    }
+    if !consts.is_empty() {
+        out.push_str(&consts);
+        out.push('\n');
+    }
+
+    if program.has_natives() {
+        out.push_str(&emit_natives(program));
+        out.push('\n');
+    }
+
+    let mut funcs = String::new();
+    let mut seen_fns: HashSet<String> = HashSet::new();
+    for unit in program.units {
+        for f in &unit.functions {
+            if seen_fns.insert(f.name.clone()) {
+                funcs.push_str(&emit_function(f));
+            }
+        }
+        for p in &unit.procedures {
+            if seen_fns.insert(p.name.clone()) {
+                funcs.push_str(&emit_procedure(p));
+            }
+        }
+    }
+    for actor in program.actors.values() {
+        for f in &actor.functions {
+            if seen_fns.insert(f.name.clone()) {
+                funcs.push_str(&emit_function(f));
+            }
+        }
+        for p in &actor.procedures {
+            if seen_fns.insert(p.name.clone()) {
+                funcs.push_str(&emit_procedure(p));
+            }
+        }
+    }
+    if !funcs.is_empty() {
+        out.push_str(&funcs);
+        out.push('\n');
+    }
+
+    let class_names: Vec<&String> = program.actors.keys().collect();
+    for class in class_names {
+        let actor = &program.actors[class];
+        out.push_str(&emit_actor(actor));
+        out.push('\n');
+    }
+
+    out.push_str(&emit_main(program));
+    out
+}
+
+fn emit_actor(actor: &Actor) -> String {
+    let ty = type_ident(&actor.name);
+    let state = actor_state(actor);
+    let mut out = String::new();
+
+    if let Some(fsm) = &actor.fsm {
+        let mut states = BTreeSet::new();
+        states.insert(fsm.initial_state.clone());
+        for t in &fsm.transitions {
+            states.insert(t.state.clone());
+            states.insert(t.next.clone());
+        }
+        let variants = states
+            .iter()
+            .map(|s| format!("    {},", fsm_variant(s)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = write!(
+            out,
+            "#[derive(Clone, Copy)]\nenum {ty}State {{\n{variants}\n}}\n\n"
+        );
+    }
+
+    let mut fields = Vec::new();
+    for p in &actor.parameters {
+        fields.push(format!("    {}: {},", ident(&p.name), rust_type(&p.typ)));
+    }
+    for v in &actor.vars {
+        fields.push(format!("    {}: {},", ident(&v.name), rust_type(&v.typ)));
+    }
+    if actor.fsm.is_some() {
+        fields.push(format!("    state: {ty}State,"));
+    }
+    let _ = write!(out, "struct {ty} {{\n{}\n}}\n\n", fields.join("\n"));
+
+    let params = actor
+        .parameters
+        .iter()
+        .map(|p| format!("{}: {}", ident(&p.name), rust_type(&p.typ)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut inits = Vec::new();
+    for p in &actor.parameters {
+        inits.push(format!(
+            "            {}: {},",
+            ident(&p.name),
+            ident(&p.name)
+        ));
+    }
+    for v in &actor.vars {
+        inits.push(format!("            {}: {},", ident(&v.name), var_init(v)));
+    }
+    if let Some(fsm) = &actor.fsm {
+        inits.push(format!(
+            "            state: {ty}State::{},",
+            fsm_variant(&fsm.initial_state)
+        ));
+    }
+    let _ = write!(
+        out,
+        "impl {ty} {{\n    fn new({params}) -> Self {{\n        Self {{\n{}\n        }}\n    }}\n\n",
+        inits.join("\n")
+    );
+
+    if let Some(init) = &actor.init {
+        let body = emit_action_body(init, &state, None);
+        let _ = write!(
+            out,
+            "    fn init(&mut self{}) {{\n{body}\n    }}\n\n",
+            port_params(actor)
+        );
+    }
+
+    let _ = write!(
+        out,
+        "    fn fire(&mut self{}) -> bool {{\n{}\n        false\n    }}\n}}\n",
+        port_params(actor),
+        emit_fire(actor, &state, &ty)
+    );
+
+    out
+}
+
+fn emit_natives(program: &Program<'_>) -> String {
+    use crate::ast::{NativeFunction, NativeProcedure};
+
+    let mut funcs: Vec<&NativeFunction> = Vec::new();
+    let mut procs: Vec<&NativeProcedure> = Vec::new();
+    let mut seen = HashSet::new();
+    for unit in program.units {
+        for f in &unit.native_functions {
+            if seen.insert(f.name.clone()) {
+                funcs.push(f);
+            }
+        }
+        for p in &unit.native_procedures {
+            if seen.insert(p.name.clone()) {
+                procs.push(p);
+            }
+        }
+    }
+    for actor in program.actors.values() {
+        for f in &actor.native_functions {
+            if seen.insert(f.name.clone()) {
+                funcs.push(f);
+            }
+        }
+        for p in &actor.native_procedures {
+            if seen.insert(p.name.clone()) {
+                procs.push(p);
+            }
+        }
+    }
+
+    let mut out = String::new();
+
+    out.push_str("unsafe extern \"C\" {\n");
+    for f in &funcs {
+        let params = c_param_list(&f.parameters);
+        let _ = writeln!(
+            out,
+            "    #[link_name = \"{0}\"]\n    fn __crt_ffi_{1}({params}) -> {2};",
+            f.name,
+            ident(&f.name),
+            c_type(&f.ret_type)
+        );
+    }
+    for p in &procs {
+        let params = c_param_list(&p.parameters);
+        let _ = writeln!(
+            out,
+            "    #[link_name = \"{0}\"]\n    fn __crt_ffi_{1}({params});",
+            p.name,
+            ident(&p.name)
+        );
+    }
+    out.push_str("}\n\n");
+
+    for f in &funcs {
+        let params = wrapper_param_list(&f.parameters);
+        let args = wrapper_call_args(&f.parameters);
+        let ret = rust_type(&f.ret_type);
+        let body = if ret == "bool" {
+            format!("unsafe {{ __crt_ffi_{}({args}) != 0 }}", ident(&f.name))
+        } else {
+            format!("unsafe {{ __crt_ffi_{}({args}) as {ret} }}", ident(&f.name))
+        };
+        let _ = writeln!(
+            out,
+            "fn {0}({params}) -> {ret} {{ {body} }}",
+            ident(&f.name)
+        );
+    }
+    for p in &procs {
+        let params = wrapper_param_list(&p.parameters);
+        let args = wrapper_call_args(&p.parameters);
+        let _ = writeln!(
+            out,
+            "fn {0}({params}) {{ unsafe {{ __crt_ffi_{0}({args}); }} }}",
+            ident(&p.name)
+        );
+    }
+
+    out.push('\n');
+    out.push_str(ORCC_OPTIONS_RS);
+    out
+}
+
+fn c_param_list(params: &[crate::ast::Parameter]) -> String {
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| format!("a{i}: {}", c_type(&p.typ)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn wrapper_param_list(params: &[crate::ast::Parameter]) -> String {
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| format!("a{i}: {}", rust_type(&p.typ)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn wrapper_call_args(params: &[crate::ast::Parameter]) -> String {
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| format!("a{i} as {}", c_type(&p.typ)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn c_type(t: &Type) -> String {
+    if t.name == "bool" {
+        return "core::ffi::c_int".to_string();
+    }
+    if t.list.is_some() {
+        return "core::ffi::c_int".to_string();
+    }
+    let unsigned = t.name.starts_with("uint");
+    let bits = t.size.as_ref().and_then(|e| eval_lit(e)).unwrap_or(32);
+    let base = match bits {
+        0..=8 => {
+            if unsigned {
+                "c_uchar"
+            } else {
+                "c_char"
+            }
+        }
+        9..=16 => {
+            if unsigned {
+                "c_ushort"
+            } else {
+                "c_short"
+            }
+        }
+        17..=32 => {
+            if unsigned {
+                "c_uint"
+            } else {
+                "c_int"
+            }
+        }
+        _ => {
+            if unsigned {
+                "c_ulonglong"
+            } else {
+                "c_longlong"
+            }
+        }
+    };
+    format!("core::ffi::{base}")
+}
+
+fn eval_lit(expr: &Expr) -> Option<u32> {
+    match expr {
+        Expr::Paren(inner) => eval_lit(inner),
+        Expr::Literal { value, .. } => {
+            let value = value.trim();
+            if let Some(hex) = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+            {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                value.parse::<u32>().ok()
+            }
+        }
+        _ => None,
+    }
+}
+
+const ORCC_OPTIONS_RS: &str = r"#[repr(C)]
+struct OrccOptions {
+    input_file: *mut core::ffi::c_char,
+    input_directory: *mut core::ffi::c_char,
+    display_flags: core::ffi::c_char,
+    nb_loops: core::ffi::c_int,
+    nb_frames: core::ffi::c_int,
+    yuv_file: *mut core::ffi::c_char,
+    mapping_input_file: *mut core::ffi::c_char,
+    mapping_output_file: *mut core::ffi::c_char,
+    nb_processors: core::ffi::c_int,
+    enable_dynamic_mapping: core::ffi::c_int,
+    nb_profiled_frames: core::ffi::c_int,
+    mapping_repetition: core::ffi::c_int,
+    profiling_file: *mut core::ffi::c_char,
+    write_file: *mut core::ffi::c_char,
+    print_firings: core::ffi::c_int,
+}
+impl OrccOptions {
+    fn new() -> Self {
+        Self {
+            input_file: core::ptr::null_mut(),
+            input_directory: core::ptr::null_mut(),
+            display_flags: 0,
+            nb_loops: -1,
+            nb_frames: -1,
+            yuv_file: core::ptr::null_mut(),
+            mapping_input_file: core::ptr::null_mut(),
+            mapping_output_file: core::ptr::null_mut(),
+            nb_processors: 1,
+            enable_dynamic_mapping: 0,
+            nb_profiled_frames: 10,
+            mapping_repetition: 1,
+            profiling_file: core::ptr::null_mut(),
+            write_file: core::ptr::null_mut(),
+            print_firings: 0,
+        }
+    }
+}
+#[unsafe(no_mangle)]
+static mut opt: *mut OrccOptions = core::ptr::null_mut();
+";
+
+const ORCC_MAIN_SETUP: &str = r#"    let __args: Vec<String> = std::env::args().collect();
+    let mut __opt = Box::new(OrccOptions::new());
+    let mut __ai = 1usize;
+    while __ai < __args.len() {
+        match __args[__ai].as_str() {
+            "-i" => {
+                __ai += 1;
+                if __ai < __args.len() {
+                    __opt.input_file =
+                        std::ffi::CString::new(__args[__ai].as_str()).unwrap().into_raw();
+                }
+            }
+            "-w" => {
+                __ai += 1;
+                if __ai < __args.len() {
+                    __opt.write_file =
+                        std::ffi::CString::new(__args[__ai].as_str()).unwrap().into_raw();
+                }
+            }
+            _ => {}
+        }
+        __ai += 1;
+    }
+    unsafe { opt = Box::into_raw(__opt); }
+"#;
+
+fn emit_function(f: &crate::ast::Function) -> String {
+    let params = f
+        .parameters
+        .iter()
+        .map(|p| format!("{}: {}", ident(&p.name), rust_type(&p.typ)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let locals: HashSet<String> = f.parameters.iter().map(|p| p.name.clone()).collect();
+    let body = emit_expr(&f.expr, &HashSet::new(), &locals);
+    format!(
+        "fn {}({params}) -> {} {{\n    {body}\n}}\n",
+        ident(&f.name),
+        rust_type(&f.ret_type)
+    )
+}
+
+fn emit_procedure(p: &crate::ast::Procedure) -> String {
+    let params = p
+        .parameters
+        .iter()
+        .map(|pp| format!("{}: {}", ident(&pp.name), rust_type(&pp.typ)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut locals: HashSet<String> = p.parameters.iter().map(|pp| pp.name.clone()).collect();
+    for v in &p.vars {
+        locals.insert(v.name.clone());
+    }
+    let decls = emit_vardefs(&p.vars, &HashSet::new(), &locals);
+    let body: String = p
+        .stmts
+        .iter()
+        .map(|s| emit_stmt(s, &HashSet::new(), &locals))
+        .collect();
+    format!("fn {}({params}) {{\n{decls}{body}}}\n", ident(&p.name))
+}
+
+fn actor_state(actor: &Actor) -> HashSet<String> {
+    actor
+        .parameters
+        .iter()
+        .map(|p| p.name.clone())
+        .chain(actor.vars.iter().map(|v| v.name.clone()))
+        .collect()
+}
+
+fn port_params(actor: &Actor) -> String {
+    let mut out = String::new();
+    for port in actor.inports.iter().chain(&actor.outports) {
+        let _ = write!(
+            out,
+            ", {}: &mut VecDeque<{}>",
+            ident(&port.name),
+            rust_type(&port.typ)
+        );
+    }
+    out
+}
+
+fn emit_fire(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
+    let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
+
+    if let Some(fsm) = &actor.fsm {
+        let mut states = BTreeSet::new();
+        for t in &fsm.transitions {
+            states.insert(t.state.clone());
+        }
+        let mut arms = String::new();
+        for s in &states {
+            let mut tries = String::new();
+            for t in fsm.transitions.iter().filter(|t| &t.state == s) {
+                let next = format!("self.state = {ty}State::{};", fsm_variant(&t.next));
+                for action_name in &t.actions {
+                    if let Some(action) = lookup(action_name) {
+                        tries.push_str(&emit_action(action, state, Some(&next)));
+                    }
+                }
+            }
+            let _ = write!(
+                arms,
+                "            {ty}State::{} => {{\n{tries}\n            }}\n",
+                fsm_variant(s)
+            );
+        }
+        format!("        match self.state {{\n{arms}        }}")
+    } else {
+        actor
+            .actions
+            .iter()
+            .map(|a| emit_action(a, state, None))
+            .collect()
+    }
+}
+
+fn emit_action(action: &Action, state: &HashSet<String>, fsm_next: Option<&str>) -> String {
+    let body = emit_action_body(action, state, fsm_next);
+    let commit = format!("{{\n{body}\n            return true;\n        }}");
+
+    let mut locals = HashSet::new();
+    for pattern in &action.input_patterns {
+        for id in &pattern.ids {
+            locals.insert(id.clone());
+        }
+    }
+    for v in &action.vars {
+        locals.insert(v.name.clone());
+    }
+
+    let guarded = if action.guards.is_empty() {
+        commit
+    } else {
+        let cond = action
+            .guards
+            .iter()
+            .map(|g| emit_expr(g, state, &locals))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        format!("if {cond} {commit}")
+    };
+
+    if action.input_patterns.is_empty() {
+        return format!("        {guarded}\n");
+    }
+
+    let avail = action
+        .input_patterns
+        .iter()
+        .map(|p| format!("{}.len() >= {}", ident(&p.port), p.ids.len()))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let mut peeks = String::new();
+    for pattern in &action.input_patterns {
+        for (i, id) in pattern.ids.iter().enumerate() {
+            let _ = writeln!(
+                peeks,
+                "            let {} = {}[{i}];",
+                ident(id),
+                ident(&pattern.port)
+            );
+        }
+    }
+    format!("        if {avail} {{\n{peeks}            {guarded}\n        }}\n")
+}
+
+fn emit_action_body(action: &Action, state: &HashSet<String>, fsm_next: Option<&str>) -> String {
+    let mut locals: HashSet<String> = action
+        .input_patterns
+        .iter()
+        .flat_map(|p| p.ids.iter().cloned())
+        .collect();
+    let mut out = String::new();
+
+    for pattern in &action.input_patterns {
+        for _ in 0..pattern.ids.len() {
+            let _ = writeln!(out, "            {}.pop_front();", ident(&pattern.port));
+        }
+    }
+
+    for v in &action.vars {
+        locals.insert(v.name.clone());
+    }
+    out.push_str(&emit_vardefs(&action.vars, state, &locals));
+
+    for stmt in &action.stmts {
+        out.push_str(&emit_stmt(stmt, state, &locals));
+    }
+    for output in &action.output_expressions {
+        for expr in &output.expressions {
+            if output.repeat.is_some() {
+                let _ = writeln!(
+                    out,
+                    "            for __tok in ({}) {{ {}.push_back(__tok); }}",
+                    emit_expr(expr, state, &locals),
+                    ident(&output.port)
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "            {}.push_back({});",
+                    ident(&output.port),
+                    emit_expr(expr, state, &locals)
+                );
+            }
+        }
+    }
+
+    if let Some(transition) = fsm_next {
+        let _ = writeln!(out, "            {transition}");
+    }
+    out
+}
+
+fn emit_vardefs(vars: &[VarDef], state: &HashSet<String>, locals: &HashSet<String>) -> String {
+    let mut out = String::new();
+    for v in vars {
+        let init = match &v.assign {
+            Some(expr) => emit_expr(expr, state, locals),
+            None => default_value(&v.typ),
+        };
+        let _ = writeln!(
+            out,
+            "            let mut {}: {} = {init};",
+            ident(&v.name),
+            rust_type(&v.typ)
+        );
+    }
+    out
+}
+
+fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+    match stmt {
+        Stmt::If { cond, then, els } => {
+            let then_block: String = then.iter().map(|s| emit_stmt(s, state, locals)).collect();
+            let mut out = format!(
+                "            if {} {{\n{then_block}            }}",
+                emit_expr(cond, state, locals)
+            );
+            if !els.is_empty() {
+                let else_block: String = els.iter().map(|s| emit_stmt(s, state, locals)).collect();
+                let _ = write!(out, " else {{\n{else_block}            }}");
+            }
+            out.push('\n');
+            out
+        }
+        Stmt::Call { name, args } if name == "println" || name == "print" => {
+            emit_print(name, args, state, locals)
+        }
+        Stmt::Call { name, args } => {
+            let args = args
+                .iter()
+                .map(|a| emit_expr(a, state, locals))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("            {}({args});\n", ident(name))
+        }
+        Stmt::Block { vars, stmts } => emit_scope(vars, stmts, state, locals),
+        Stmt::While { cond, vars, stmts } => {
+            let mut inner = locals.clone();
+            inner.extend(vars.iter().map(|v| v.name.clone()));
+            let decls = emit_vardefs(vars, state, &inner);
+            let body: String = stmts.iter().map(|s| emit_stmt(s, state, &inner)).collect();
+            format!(
+                "            while {} {{\n{decls}{body}            }}\n",
+                emit_expr(cond, state, locals)
+            )
+        }
+        Stmt::Foreach {
+            generators,
+            vars,
+            stmts,
+        } => {
+            let mut inner = locals.clone();
+            inner.extend(generators.iter().map(|g| g.identifier.clone()));
+            inner.extend(vars.iter().map(|v| v.name.clone()));
+            let decls = emit_vardefs(vars, state, &inner);
+            let body: String = stmts.iter().map(|s| emit_stmt(s, state, &inner)).collect();
+            let mut out = String::new();
+            for g in generators {
+                out.push_str(&emit_for_header(g, state, locals));
+            }
+            out.push_str(&decls);
+            out.push_str(&body);
+            for _ in generators {
+                out.push_str("            }\n");
+            }
+            out
+        }
+        Stmt::OutputWrite { port, expr } => format!(
+            "            {}.push_back({});\n",
+            ident(port),
+            emit_expr(expr, state, locals)
+        ),
+        Stmt::InputRead {
+            port, identifier, ..
+        } => format!(
+            "            let {} = {}.pop_front().unwrap();\n",
+            ident(identifier),
+            ident(port)
+        ),
+        Stmt::Assign {
+            identifier,
+            indices,
+            value,
+            ..
+        } => {
+            let mut target = resolve(identifier, state, locals);
+            for index in indices {
+                target = format!("{target}[({}) as usize]", emit_expr(index, state, locals));
+            }
+            match value {
+                Some(expr) => format!(
+                    "            {target} = {};\n",
+                    emit_expr(expr, state, locals)
+                ),
+                None => String::new(),
+            }
+        }
+        Stmt::Return => "            return false;\n".to_string(),
+        Stmt::TerminateLoop => "            break;\n".to_string(),
+    }
+}
+
+fn emit_scope(
+    vars: &[VarDef],
+    stmts: &[Stmt],
+    state: &HashSet<String>,
+    locals: &HashSet<String>,
+) -> String {
+    let mut inner = locals.clone();
+    inner.extend(vars.iter().map(|v| v.name.clone()));
+    let decls = emit_vardefs(vars, state, &inner);
+    let body: String = stmts.iter().map(|s| emit_stmt(s, state, &inner)).collect();
+    format!("            {{\n{decls}{body}            }}\n")
+}
+
+fn emit_for_header(g: &Generator, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+    format!(
+        "            for {} in ({})..=({}) {{\n",
+        ident(&g.identifier),
+        emit_expr(&g.start, state, locals),
+        emit_expr(&g.end, state, locals)
+    )
+}
+
+fn emit_print(
+    name: &str,
+    args: &[Expr],
+    state: &HashSet<String>,
+    locals: &HashSet<String>,
+) -> String {
+    let macro_name = if name == "println" {
+        "println"
+    } else {
+        "print"
+    };
+    let mut operands = Vec::new();
+    for arg in args {
+        flatten_concat(arg, &mut operands);
+    }
+    let fmt = "{}".repeat(operands.len());
+    let rendered = operands
+        .iter()
+        .map(|e| emit_expr(e, state, locals))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if rendered.is_empty() {
+        format!("            {macro_name}!(\"{fmt}\");\n")
+    } else {
+        format!("            {macro_name}!(\"{fmt}\", {rendered});\n")
+    }
+}
+
+fn flatten_concat<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::Paren(inner) => flatten_concat(inner, out),
+        Expr::BinOp { op, left, right } if op == "+" => {
+            flatten_concat(left, out);
+            flatten_concat(right, out);
+        }
+        _ => out.push(expr),
+    }
+}
+
+fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+    match expr {
+        Expr::Paren(inner) => format!("({})", emit_expr(inner, state, locals)),
+        Expr::BinOp { op, left, right } => format!(
+            "{} {} {}",
+            emit_expr(left, state, locals),
+            map_op(op),
+            emit_expr(right, state, locals)
+        ),
+        Expr::Literal { negation, value } => {
+            if value.starts_with('"') || value.starts_with('\'') {
+                value.clone()
+            } else if *negation {
+                format!("-{value}")
+            } else {
+                value.clone()
+            }
+        }
+        Expr::Identifier {
+            name,
+            unary_left,
+            indices,
+            call,
+            ..
+        } => {
+            let mut base = match call {
+                Some(args) => {
+                    let rendered = args
+                        .iter()
+                        .map(|a| emit_expr(a, state, locals))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("{}({rendered})", ident(name))
+                }
+                None => resolve(name, state, locals),
+            };
+            for index in indices {
+                base = format!("{base}[({}) as usize]", emit_expr(index, state, locals));
+            }
+            if let Some(op) = unary_left {
+                base = format!("{}{base}", map_unary(op));
+            }
+            base
+        }
+        Expr::FsmEnumElement { enum_name, element } => {
+            format!("{}::{}", type_ident(enum_name), fsm_variant(element))
+        }
+        Expr::PortPreview { port, index, .. } => match index {
+            Some(index) => format!(
+                "{}[({}) as usize]",
+                ident(port),
+                emit_expr(index, state, locals)
+            ),
+            None => format!("{}[0]", ident(port)),
+        },
+        Expr::PortSize { port } => format!("({}.len() as i64)", ident(port)),
+        Expr::PortFree { .. } => "0".to_string(),
+        Expr::Ternary { cond, then, els } => format!(
+            "if {} {{ {} }} else {{ {} }}",
+            emit_expr(cond, state, locals),
+            emit_expr(then, state, locals),
+            emit_expr(els, state, locals)
+        ),
+        Expr::ListComprehension {
+            expressions,
+            generators,
+        } => {
+            if generators.is_empty() {
+                let elems = expressions
+                    .iter()
+                    .map(|e| emit_expr(e, state, locals))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("vec![{elems}]")
+            } else {
+                let mut inner = locals.clone();
+                for g in generators {
+                    inner.insert(g.identifier.clone());
+                }
+                let mut body = String::new();
+                for g in generators {
+                    let _ = write!(
+                        body,
+                        "for {} in ({})..=({}) {{ ",
+                        ident(&g.identifier),
+                        emit_expr(&g.start, state, &inner),
+                        emit_expr(&g.end, state, &inner)
+                    );
+                }
+                for e in expressions {
+                    let _ = write!(body, "__lc.push({}); ", emit_expr(e, state, &inner));
+                }
+                for _ in generators {
+                    body.push_str("} ");
+                }
+                format!("{{ let mut __lc = Vec::new(); {body}__lc }}")
+            }
+        }
+    }
+}
+
+fn resolve(name: &str, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+    if locals.contains(name) {
+        ident(name)
+    } else if state.contains(name) {
+        format!("self.{}", ident(name))
+    } else {
+        ident(name)
+    }
+}
+
+fn map_op(op: &str) -> &str {
+    match op {
+        "=" => "==",
+        "and" => "&&",
+        "or" => "||",
+        "not" => "!",
+        "mod" => "%",
+        "div" => "/",
+        other => other,
+    }
+}
+
+fn map_unary(op: &str) -> &str {
+    match op {
+        "not" => "!",
+        other => other,
+    }
+}
+
+fn emit_main(program: &Program<'_>) -> String {
+    let network = program.network;
+    let instances: Vec<&Instance> = network
+        .instances
+        .iter()
+        .filter(|i| program.actors.contains_key(&i.class_name))
+        .collect();
+
+    let mut out = String::from("fn main() {\n");
+
+    if program.has_natives() {
+        out.push_str(ORCC_MAIN_SETUP);
+    }
+
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        for port in &actor.inports {
+            let _ = writeln!(
+                out,
+                "    let mut {}: VecDeque<{}> = VecDeque::new();",
+                fifo_in(&inst.id, &port.name),
+                rust_type(&port.typ)
+            );
+        }
+        for port in &actor.outports {
+            let _ = writeln!(
+                out,
+                "    let mut {}: VecDeque<{}> = VecDeque::new();",
+                fifo_out(&inst.id, &port.name),
+                rust_type(&port.typ)
+            );
+        }
+    }
+
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        let args = actor
+            .parameters
+            .iter()
+            .map(|p| {
+                let value = inst.parameters.iter().find(|param| param.key == p.name);
+                match value {
+                    Some(param) => param_value(&p.typ, &param.value),
+                    None => match &p.default {
+                        Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
+                        None => default_value(&p.typ),
+                    },
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            out,
+            "    let mut {} = {}::new({args});",
+            inst_var(&inst.id),
+            type_ident(&actor.name)
+        );
+    }
+
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        if actor.init.is_some() {
+            let _ = writeln!(
+                out,
+                "    {}.init({});",
+                inst_var(&inst.id),
+                fire_args(inst, actor)
+            );
+        }
+    }
+
+    out.push_str("    loop {\n        let mut progress = false;\n");
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        let _ = write!(
+            out,
+            "        if {}.fire({}) {{\n{}            progress = true;\n        }}\n",
+            inst_var(&inst.id),
+            fire_args(inst, actor),
+            distribute(program, inst, actor)
+        );
+    }
+    out.push_str("        if !progress {\n            break;\n        }\n    }\n}\n");
+    out
+}
+
+fn fire_args(inst: &Instance, actor: &Actor) -> String {
+    let mut parts = Vec::new();
+    for port in &actor.inports {
+        parts.push(format!("&mut {}", fifo_in(&inst.id, &port.name)));
+    }
+    for port in &actor.outports {
+        parts.push(format!("&mut {}", fifo_out(&inst.id, &port.name)));
+    }
+    parts.join(", ")
+}
+
+fn distribute(program: &Program<'_>, inst: &Instance, actor: &Actor) -> String {
+    let mut out = String::new();
+    for port in &actor.outports {
+        let targets: Vec<String> = program
+            .network
+            .edges
+            .iter()
+            .filter(|e| e.src_id == inst.id && e.src_port == port.name)
+            .map(|e| fifo_in(&e.dst_id, &e.dst_port))
+            .collect();
+        let staging = fifo_out(&inst.id, &port.name);
+        if targets.is_empty() {
+            let _ = writeln!(out, "            {staging}.clear();");
+        } else {
+            let _ = writeln!(
+                out,
+                "            while let Some(token) = {staging}.pop_front() {{"
+            );
+            for target in &targets {
+                let _ = writeln!(out, "                {target}.push_back(token);");
+            }
+            out.push_str("            }\n");
+        }
+    }
+    out
+}
+
+fn rust_type(t: &Type) -> String {
+    if let Some(inner) = &t.list {
+        return format!("Vec<{}>", rust_type(inner));
+    }
+    match t.name.as_str() {
+        "bool" => "bool".to_string(),
+        "String" | "string" => "String".to_string(),
+        "float" | "double" | "half" => "f64".to_string(),
+        _ => "i64".to_string(),
+    }
+}
+
+fn default_value(t: &Type) -> String {
+    if let Some(inner) = &t.list {
+        return match &t.size {
+            Some(size) => format!(
+                "vec![{}; ({}) as usize]",
+                default_value(inner),
+                emit_expr(size, &HashSet::new(), &HashSet::new())
+            ),
+            None => "Vec::new()".to_string(),
+        };
+    }
+    match t.name.as_str() {
+        "bool" => "false".to_string(),
+        "String" | "string" => "String::new()".to_string(),
+        "float" | "double" | "half" => "0.0".to_string(),
+        _ => "0".to_string(),
+    }
+}
+
+fn emit_const(v: &VarDef) -> String {
+    let value = match &v.assign {
+        Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
+        None => default_value(&v.typ),
+    };
+    format!(
+        "const {}: {} = {value};\n",
+        ident(&v.name),
+        rust_type(&v.typ)
+    )
+}
+
+fn var_init(v: &VarDef) -> String {
+    match &v.assign {
+        Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
+        None => default_value(&v.typ),
+    }
+}
+
+fn param_value(t: &Type, value: &str) -> String {
+    if value.is_empty() {
+        return default_value(t);
+    }
+    match rust_type(t).as_str() {
+        "String" => format!("{value:?}.to_string()"),
+        _ => value.to_string(),
+    }
+}
+
+fn ident(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out
+}
+
+fn type_ident(name: &str) -> String {
+    ident(name)
+}
+
+fn fsm_variant(state: &str) -> String {
+    format!("St_{}", ident(state))
+}
+
+fn inst_var(id: &str) -> String {
+    format!("inst_{}", ident(id))
+}
+
+fn fifo_in(id: &str, port: &str) -> String {
+    format!("fin_{}_{}", ident(id), ident(port))
+}
+
+fn fifo_out(id: &str, port: &str) -> String {
+    format!("fout_{}_{}", ident(id), ident(port))
+}

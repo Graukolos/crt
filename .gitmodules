@@ -1,0 +1,6 @@
+[submodule "Dataflow_Code_Generator"]
+	path = Dataflow_Code_Generator
+	url = https://github.com/Graukolos/Dataflow_Code_Generator.git
+[submodule "orc-apps"]
+	path = orc-apps
+	url = https://github.com/orcc/orc-apps.git
