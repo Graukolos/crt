@@ -27,4 +27,13 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={f}");
     }
+
+    for f in [
+        "Lexer/Lexer.cpp",
+        "Parser/Parser.cpp",
+        "IR/AST/AST_Builder.cpp",
+        "Reader/Network_Reader.cpp",
+    ] {
+        println!("cargo:rerun-if-changed={}", dcg.join(f).display());
+    }
 }

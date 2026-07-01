@@ -6,8 +6,8 @@ mod convert;
 mod ffi;
 mod network_ffi;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Parser;
@@ -45,6 +45,7 @@ fn main() -> Result<()> {
 
     let mut actors = HashMap::new();
     let mut units = Vec::new();
+    let mut import_paths: Vec<String> = Vec::new();
     for class in &network.class_paths {
         let code = std::fs::read_to_string(&class.path)?;
         let raw = match ffi::ffi::parse_cal(&code) {
@@ -54,13 +55,36 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         };
-        match convert::convert(&raw).item {
+        let ast = convert::convert(&raw);
+        import_paths.extend(ast.imports.into_iter().map(|i| i.path));
+        match ast.item {
             Item::Actor(actor) => {
                 actors.insert(class.class_name.clone(), actor);
             }
             Item::Unit(unit) => {
                 units.push(unit);
             }
+        }
+    }
+
+    let mut seen_imports: HashSet<PathBuf> = HashSet::new();
+    for import_path in import_paths {
+        let Some(file) = resolve_import_file(&args.source_dir, &import_path) else {
+            continue;
+        };
+        if !seen_imports.insert(file.clone()) {
+            continue;
+        }
+        let code = std::fs::read_to_string(&file)?;
+        let raw = match ffi::ffi::parse_cal(&code) {
+            Ok(ast) => ast,
+            Err(e) => {
+                eprintln!("warning: skipping imported {}: parse error: {e}", file.display());
+                continue;
+            }
+        };
+        if let Item::Unit(unit) = convert::convert(&raw).item {
+            units.push(unit);
         }
     }
 
@@ -100,6 +124,26 @@ fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn resolve_import_file(source_dir: &Path, import_path: &str) -> Option<PathBuf> {
+    let as_file = |dotted: &str| -> PathBuf {
+        source_dir
+            .join(dotted.split('.').collect::<PathBuf>())
+            .with_extension("cal")
+    };
+
+    let full = as_file(import_path);
+    if full.is_file() {
+        return Some(full);
+    }
+    if let Some((package, _symbol)) = import_path.rsplit_once('.') {
+        let file = as_file(package);
+        if file.is_file() {
+            return Some(file);
+        }
+    }
+    None
 }
 
 fn discover_native_sources(dir: &std::path::Path) -> Vec<PathBuf> {

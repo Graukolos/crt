@@ -999,6 +999,18 @@ pub fn default_value(t: &Type) -> String {
 }
 
 fn emit_const(v: &VarDef) -> String {
+    if !v.arrays.is_empty() {
+        let mut ty = rust_type(&v.typ);
+        for _ in &v.arrays {
+            ty = format!("&[{ty}]");
+        }
+        let value = match &v.assign {
+            Some(expr) => const_array_value(expr),
+            None => "&[]".to_string(),
+        };
+        return format!("const {}: {ty} = {value};\n", ident(&v.name));
+    }
+
     let value = match &v.assign {
         Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
         None => default_value(&v.typ),
@@ -1008,6 +1020,23 @@ fn emit_const(v: &VarDef) -> String {
         ident(&v.name),
         rust_type(&v.typ)
     )
+}
+
+fn const_array_value(expr: &Expr) -> String {
+    if let Expr::ListComprehension {
+        expressions,
+        generators,
+    } = expr
+        && generators.is_empty()
+    {
+        let elems = expressions
+            .iter()
+            .map(const_array_value)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("&[{elems}]");
+    }
+    emit_expr(expr, &HashSet::new(), &HashSet::new())
 }
 
 fn var_init(v: &VarDef) -> String {
