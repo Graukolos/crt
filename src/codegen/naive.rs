@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::ast::{Action, Actor, Expr, Generator, Stmt, Type, VarDef};
+use crate::ast::{Action, Actor, Expr, Generator, InputPattern, Stmt, Type, VarDef};
 use crate::codegen::{CodeGenerator, Program};
 use crate::network_ffi::ffi::Instance;
 
@@ -128,7 +128,7 @@ fn emit_actor(actor: &Actor) -> String {
         fields.push(format!("    {}: {},", ident(&p.name), rust_type(&p.typ)));
     }
     for v in &actor.vars {
-        fields.push(format!("    {}: {},", ident(&v.name), rust_type(&v.typ)));
+        fields.push(format!("    {}: {},", ident(&v.name), var_rust_type(v)));
     }
     if actor.fsm.is_some() {
         fields.push(format!("    state: {ty}State,"));
@@ -141,12 +141,16 @@ fn emit_actor(actor: &Actor) -> String {
         .map(|p| format!("{}: {}", ident(&p.name), rust_type(&p.typ)))
         .collect::<Vec<_>>()
         .join(", ");
+    let mut lets = String::new();
+    for v in &actor.vars {
+        let _ = writeln!(lets, "        let {} = {};", ident(&v.name), var_init(v));
+    }
     let mut inits = Vec::new();
     for p in &actor.parameters {
         inits.push(format!("            {},", ident(&p.name)));
     }
     for v in &actor.vars {
-        inits.push(format!("            {}: {},", ident(&v.name), var_init(v)));
+        inits.push(format!("            {},", ident(&v.name)));
     }
     if let Some(fsm) = &actor.fsm {
         inits.push(format!(
@@ -156,7 +160,7 @@ fn emit_actor(actor: &Actor) -> String {
     }
     let _ = write!(
         out,
-        "impl {ty} {{\n    fn new({params}) -> Self {{\n        Self {{\n{}\n        }}\n    }}\n\n",
+        "impl {ty} {{\n    fn new({params}) -> Self {{\n{lets}        Self {{\n{}\n        }}\n    }}\n\n",
         inits.join("\n")
     );
 
@@ -402,7 +406,7 @@ fn port_params(actor: &Actor) -> String {
         let _ = write!(
             out,
             ", {}: &mut VecDeque<{}>",
-            ident(&port.name),
+            port_ref(&port.name),
             rust_type(&port.typ)
         );
     }
@@ -444,6 +448,21 @@ fn emit_fire(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
     }
 }
 
+fn pattern_token_count(
+    p: &InputPattern,
+    state: &HashSet<String>,
+    locals: &HashSet<String>,
+) -> String {
+    match &p.repeat {
+        Some(repeat) => format!(
+            "({} * ({})) as usize",
+            p.ids.len(),
+            emit_expr(repeat, state, locals)
+        ),
+        None => p.ids.len().to_string(),
+    }
+}
+
 fn emit_action(action: &Action, state: &HashSet<String>, fsm_next: Option<&str>) -> String {
     let body = emit_action_body(action, state, fsm_next);
     let commit = format!("{{\n{body}\n            return true;\n        }}");
@@ -477,18 +496,35 @@ fn emit_action(action: &Action, state: &HashSet<String>, fsm_next: Option<&str>)
     let avail = action
         .input_patterns
         .iter()
-        .map(|p| format!("{}.len() >= {}", ident(&p.port), p.ids.len()))
+        .map(|p| {
+            format!(
+                "{}.len() >= {}",
+                port_ref(&p.port),
+                pattern_token_count(p, state, &locals)
+            )
+        })
         .collect::<Vec<_>>()
         .join(" && ");
     let mut peeks = String::new();
     for pattern in &action.input_patterns {
+        let stride = pattern.ids.len();
         for (i, id) in pattern.ids.iter().enumerate() {
-            let _ = writeln!(
-                peeks,
-                "            let {} = {}[{i}];",
-                ident(id),
-                ident(&pattern.port)
-            );
+            if let Some(repeat) = &pattern.repeat {
+                let _ = writeln!(
+                    peeks,
+                    "            let mut {}: Vec<_> = ({i}..({stride} * ({})) as usize).step_by({stride}).map(|__j| {}[__j]).collect();",
+                    ident(id),
+                    emit_expr(repeat, state, &locals),
+                    port_ref(&pattern.port)
+                );
+            } else {
+                let _ = writeln!(
+                    peeks,
+                    "            let mut {} = {}[{i}];",
+                    ident(id),
+                    port_ref(&pattern.port)
+                );
+            }
         }
     }
     format!("        if {avail} {{\n{peeks}            {guarded}\n        }}\n")
@@ -503,9 +539,12 @@ fn emit_action_body(action: &Action, state: &HashSet<String>, fsm_next: Option<&
     let mut out = String::new();
 
     for pattern in &action.input_patterns {
-        for _ in 0..pattern.ids.len() {
-            let _ = writeln!(out, "            {}.pop_front();", ident(&pattern.port));
-        }
+        let _ = writeln!(
+            out,
+            "            for _ in 0..{} {{ {}.pop_front(); }}",
+            pattern_token_count(pattern, state, &locals),
+            port_ref(&pattern.port)
+        );
     }
 
     for v in &action.vars {
@@ -521,15 +560,15 @@ fn emit_action_body(action: &Action, state: &HashSet<String>, fsm_next: Option<&
             if output.repeat.is_some() {
                 let _ = writeln!(
                     out,
-                    "            for __tok in ({}) {{ {}.push_back(__tok); }}",
+                    "            for __tok in ({}).clone() {{ {}.push_back(__tok); }}",
                     emit_expr(expr, state, &locals),
-                    ident(&output.port)
+                    port_ref(&output.port)
                 );
             } else {
                 let _ = writeln!(
                     out,
                     "            {}.push_back({});",
-                    ident(&output.port),
+                    port_ref(&output.port),
                     emit_expr(expr, state, &locals)
                 );
             }
@@ -547,13 +586,13 @@ fn emit_vardefs(vars: &[VarDef], state: &HashSet<String>, locals: &HashSet<Strin
     for v in vars {
         let init = match &v.assign {
             Some(expr) => emit_expr(expr, state, locals),
-            None => default_value(&v.typ),
+            None => var_default(v),
         };
         let _ = writeln!(
             out,
             "            let mut {}: {} = {init};",
             ident(&v.name),
-            rust_type(&v.typ)
+            var_rust_type(v)
         );
     }
     out
@@ -619,7 +658,7 @@ fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>) -> 
         }
         Stmt::OutputWrite { port, expr } => format!(
             "            {}.push_back({});\n",
-            ident(port),
+            port_ref(port),
             emit_expr(expr, state, locals)
         ),
         Stmt::InputRead {
@@ -627,7 +666,7 @@ fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>) -> 
         } => format!(
             "            let {} = {}.pop_front().unwrap();\n",
             ident(identifier),
-            ident(port)
+            port_ref(port)
         ),
         Stmt::Assign {
             identifier,
@@ -1042,8 +1081,27 @@ fn const_array_value(expr: &Expr) -> String {
 fn var_init(v: &VarDef) -> String {
     match &v.assign {
         Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
-        None => default_value(&v.typ),
+        None => var_default(v),
     }
+}
+
+fn var_rust_type(v: &VarDef) -> String {
+    let mut ty = rust_type(&v.typ);
+    for _ in &v.arrays {
+        ty = format!("Vec<{ty}>");
+    }
+    ty
+}
+
+fn var_default(v: &VarDef) -> String {
+    let mut val = default_value(&v.typ);
+    for dim in v.arrays.iter().rev() {
+        val = format!(
+            "vec![{val}; ({}) as usize]",
+            emit_expr(dim, &HashSet::new(), &HashSet::new())
+        );
+    }
+    val
 }
 
 pub fn param_value(t: &Type, value: &str) -> String {
@@ -1083,6 +1141,10 @@ fn fsm_variant(state: &str) -> String {
 
 pub fn inst_var(id: &str) -> String {
     format!("inst_{}", ident(id))
+}
+
+pub fn port_ref(name: &str) -> String {
+    format!("port_{}", ident(name))
 }
 
 pub fn fifo_in(id: &str, port: &str) -> String {

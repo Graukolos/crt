@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use clap::ValueEnum;
 use proc_macro2::TokenStream;
 
-use crate::ast::{Actor, Unit};
+use crate::ast::{Actor, NativeFunction, NativeProcedure, Unit};
 use crate::network_ffi::ffi::Network;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -40,7 +40,16 @@ pub struct Program<'a> {
 
 impl Program<'_> {
     pub fn has_natives(&self) -> bool {
-        !self.native_sources.is_empty()
+        let uses_native = |fns: &[NativeFunction], procs: &[NativeProcedure]| {
+            !fns.is_empty() || !procs.is_empty()
+        };
+        self.actors
+            .values()
+            .any(|a| uses_native(&a.native_functions, &a.native_procedures))
+            || self
+                .units
+                .iter()
+                .any(|u| uses_native(&u.native_functions, &u.native_procedures))
     }
 }
 
