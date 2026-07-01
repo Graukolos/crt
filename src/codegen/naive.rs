@@ -35,6 +35,13 @@ fn emit_program(program: &Program<'_>) -> String {
     let mut out = String::new();
     out.push_str("#![allow(warnings)]\n");
     out.push_str("use std::collections::VecDeque;\n\n");
+    out.push_str(&emit_decls(program));
+    out.push_str(&emit_main(program));
+    out
+}
+
+pub fn emit_decls(program: &Program<'_>) -> String {
+    let mut out = String::new();
 
     let mut consts = String::new();
     for unit in program.units {
@@ -90,7 +97,6 @@ fn emit_program(program: &Program<'_>) -> String {
         out.push('\n');
     }
 
-    out.push_str(&emit_main(program));
     out
 }
 
@@ -137,11 +143,7 @@ fn emit_actor(actor: &Actor) -> String {
         .join(", ");
     let mut inits = Vec::new();
     for p in &actor.parameters {
-        inits.push(format!(
-            "            {}: {},",
-            ident(&p.name),
-            ident(&p.name)
-        ));
+        inits.push(format!("            {},", ident(&p.name)));
     }
     for v in &actor.vars {
         inits.push(format!("            {}: {},", ident(&v.name), var_init(v)));
@@ -258,7 +260,7 @@ fn emit_natives(program: &Program<'_>) -> String {
     }
 
     out.push('\n');
-    out.push_str(ORCC_OPTIONS_RS);
+    out.push_str(super::orcc::OPTIONS_RS);
     out
 }
 
@@ -348,75 +350,6 @@ fn eval_lit(expr: &Expr) -> Option<u32> {
         _ => None,
     }
 }
-
-const ORCC_OPTIONS_RS: &str = r"#[repr(C)]
-struct OrccOptions {
-    input_file: *mut core::ffi::c_char,
-    input_directory: *mut core::ffi::c_char,
-    display_flags: core::ffi::c_char,
-    nb_loops: core::ffi::c_int,
-    nb_frames: core::ffi::c_int,
-    yuv_file: *mut core::ffi::c_char,
-    mapping_input_file: *mut core::ffi::c_char,
-    mapping_output_file: *mut core::ffi::c_char,
-    nb_processors: core::ffi::c_int,
-    enable_dynamic_mapping: core::ffi::c_int,
-    nb_profiled_frames: core::ffi::c_int,
-    mapping_repetition: core::ffi::c_int,
-    profiling_file: *mut core::ffi::c_char,
-    write_file: *mut core::ffi::c_char,
-    print_firings: core::ffi::c_int,
-}
-impl OrccOptions {
-    fn new() -> Self {
-        Self {
-            input_file: core::ptr::null_mut(),
-            input_directory: core::ptr::null_mut(),
-            display_flags: 0,
-            nb_loops: -1,
-            nb_frames: -1,
-            yuv_file: core::ptr::null_mut(),
-            mapping_input_file: core::ptr::null_mut(),
-            mapping_output_file: core::ptr::null_mut(),
-            nb_processors: 1,
-            enable_dynamic_mapping: 0,
-            nb_profiled_frames: 10,
-            mapping_repetition: 1,
-            profiling_file: core::ptr::null_mut(),
-            write_file: core::ptr::null_mut(),
-            print_firings: 0,
-        }
-    }
-}
-#[unsafe(no_mangle)]
-static mut opt: *mut OrccOptions = core::ptr::null_mut();
-";
-
-const ORCC_MAIN_SETUP: &str = r#"    let __args: Vec<String> = std::env::args().collect();
-    let mut __opt = Box::new(OrccOptions::new());
-    let mut __ai = 1usize;
-    while __ai < __args.len() {
-        match __args[__ai].as_str() {
-            "-i" => {
-                __ai += 1;
-                if __ai < __args.len() {
-                    __opt.input_file =
-                        std::ffi::CString::new(__args[__ai].as_str()).unwrap().into_raw();
-                }
-            }
-            "-w" => {
-                __ai += 1;
-                if __ai < __args.len() {
-                    __opt.write_file =
-                        std::ffi::CString::new(__args[__ai].as_str()).unwrap().into_raw();
-                }
-            }
-            _ => {}
-        }
-        __ai += 1;
-    }
-    unsafe { opt = Box::into_raw(__opt); }
-"#;
 
 fn emit_function(f: &crate::ast::Function) -> String {
     let params = f
@@ -780,7 +713,7 @@ fn flatten_concat<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+pub fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>) -> String {
     match expr {
         Expr::Paren(inner) => format!("({})", emit_expr(inner, state, locals)),
         Expr::BinOp { op, left, right } => format!(
@@ -921,7 +854,7 @@ fn emit_main(program: &Program<'_>) -> String {
     let mut out = String::from("fn main() {\n");
 
     if program.has_natives() {
-        out.push_str(ORCC_MAIN_SETUP);
+        out.push_str(super::orcc::MAIN_SETUP);
     }
 
     for inst in &instances {
@@ -996,7 +929,7 @@ fn emit_main(program: &Program<'_>) -> String {
     out
 }
 
-fn fire_args(inst: &Instance, actor: &Actor) -> String {
+pub fn fire_args(inst: &Instance, actor: &Actor) -> String {
     let mut parts = Vec::new();
     for port in &actor.inports {
         parts.push(format!("&mut {}", fifo_in(&inst.id, &port.name)));
@@ -1034,7 +967,7 @@ fn distribute(program: &Program<'_>, inst: &Instance, actor: &Actor) -> String {
     out
 }
 
-fn rust_type(t: &Type) -> String {
+pub fn rust_type(t: &Type) -> String {
     if let Some(inner) = &t.list {
         return format!("Vec<{}>", rust_type(inner));
     }
@@ -1046,7 +979,7 @@ fn rust_type(t: &Type) -> String {
     }
 }
 
-fn default_value(t: &Type) -> String {
+pub fn default_value(t: &Type) -> String {
     if let Some(inner) = &t.list {
         return match &t.size {
             Some(size) => format!(
@@ -1084,7 +1017,7 @@ fn var_init(v: &VarDef) -> String {
     }
 }
 
-fn param_value(t: &Type, value: &str) -> String {
+pub fn param_value(t: &Type, value: &str) -> String {
     if value.is_empty() {
         return default_value(t);
     }
@@ -1094,7 +1027,7 @@ fn param_value(t: &Type, value: &str) -> String {
     }
 }
 
-fn ident(name: &str) -> String {
+pub fn ident(name: &str) -> String {
     let mut out: String = name
         .chars()
         .map(|c| {
@@ -1111,7 +1044,7 @@ fn ident(name: &str) -> String {
     out
 }
 
-fn type_ident(name: &str) -> String {
+pub fn type_ident(name: &str) -> String {
     ident(name)
 }
 
@@ -1119,14 +1052,14 @@ fn fsm_variant(state: &str) -> String {
     format!("St_{}", ident(state))
 }
 
-fn inst_var(id: &str) -> String {
+pub fn inst_var(id: &str) -> String {
     format!("inst_{}", ident(id))
 }
 
-fn fifo_in(id: &str, port: &str) -> String {
+pub fn fifo_in(id: &str, port: &str) -> String {
     format!("fin_{}_{}", ident(id), ident(port))
 }
 
-fn fifo_out(id: &str, port: &str) -> String {
+pub fn fifo_out(id: &str, port: &str) -> String {
     format!("fout_{}_{}", ident(id), ident(port))
 }

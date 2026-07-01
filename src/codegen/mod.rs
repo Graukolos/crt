@@ -1,4 +1,5 @@
 mod naive;
+mod orcc;
 mod rayon;
 mod tokio;
 
@@ -55,36 +56,12 @@ pub fn write_cargo_toml(out_dir: &Path, package_name: &str, has_natives: bool) -
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n"
     );
     if has_natives {
+        contents.push_str("clap = { version = \"4\", features = [\"derive\"] }\n");
         contents.push_str("\n[build-dependencies]\ncc = \"1\"\n");
     }
     contents.push_str("\n[profile.release]\nlto = true\ncodegen-units = 1\n");
     write_file(&out_dir.join("Cargo.toml"), &contents)
 }
-
-const ORCC_OPTIONS_H: &str = r"#ifndef OPTIONS_HEADER
-#define OPTIONS_HEADER
-struct ORCC_options {
-	char *input_file;
-	char *input_directory;
-	char display_flags;
-	int nbLoops;
-	int nbFrames;
-	char *yuv_file;
-	char *mapping_input_file;
-	char *mapping_output_file;
-	int nb_processors;
-	int enable_dynamic_mapping;
-	int nbProfiledFrames;
-	int mapping_repetition;
-	char *profiling_file;
-	char *write_file;
-	int print_firings;
-};
-typedef struct ORCC_options options_t;
-extern options_t *opt;
-void parse_command_line_input(int argc, char *argv[]);
-#endif
-";
 
 pub fn write_native_support(out_dir: &Path, native_sources: &[PathBuf]) -> io::Result<()> {
     let native_dir = out_dir.join("native");
@@ -112,7 +89,7 @@ pub fn write_native_support(out_dir: &Path, native_sources: &[PathBuf]) -> io::R
     }
 
     if !have_options_h {
-        write_file(&native_dir.join("options.h"), ORCC_OPTIONS_H)?;
+        write_file(&native_dir.join("options.h"), orcc::OPTIONS_H)?;
     }
 
     let files: String = translation_units
