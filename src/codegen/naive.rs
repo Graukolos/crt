@@ -1008,7 +1008,7 @@ fn emit_const(v: &VarDef) -> String {
             Some(expr) => const_array_value(expr),
             None => "&[]".to_string(),
         };
-        return format!("const {}: {ty} = {value};\n", ident(&v.name));
+        return format!("static {}: {ty} = {value};\n", ident(&v.name));
     }
 
     let value = match &v.assign {
