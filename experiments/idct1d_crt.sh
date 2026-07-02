@@ -2,11 +2,22 @@
 
 set -e
 
-rm -rf /tmp/idct1d
+XDF=orc-apps/Research/src/com/xilinx/mpeg4/part2/sp/iDCT/Idct1d.xdf
+SRC=orc-apps/Research/src
+BIN=idct1d
+NAIVE=/tmp/idct1d_naive
+TOKIO=/tmp/idct1d_tokio
 
-cargo r -r -- orc-apps/Research/src/com/xilinx/mpeg4/part2/sp/iDCT/Idct1d.xdf orc-apps/Research/src --out /tmp/idct1d
-cargo b -r --manifest-path /tmp/idct1d/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-hyperfine --warmup 3 -N /tmp/idct1d/target/release/idct1d
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/idct1d
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+hyperfine --warmup 3 -N \
+  -n naive "$NAIVE/target/release/$BIN" \
+  -n tokio "$TOKIO/target/release/$BIN"
+
+rm -rf "$NAIVE" "$TOKIO"

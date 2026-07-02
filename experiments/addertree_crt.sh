@@ -2,11 +2,22 @@
 
 set -e
 
-rm -rf /tmp/addertree
+XDF=orc-apps/Predistortion/src/lowlevel_dpd/AdderTree.xdf
+SRC=orc-apps/Predistortion/src
+BIN=addertree
+NAIVE=/tmp/addertree_naive
+TOKIO=/tmp/addertree_tokio
 
-cargo r -r -- orc-apps/Predistortion/src/lowlevel_dpd/AdderTree.xdf orc-apps/Predistortion/src --out /tmp/addertree
-cargo b -r --manifest-path /tmp/addertree/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-hyperfine --warmup 3 -N /tmp/addertree/target/release/addertree
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/addertree
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+hyperfine --warmup 3 -N \
+  -n naive "$NAIVE/target/release/$BIN" \
+  -n tokio "$TOKIO/target/release/$BIN"
+
+rm -rf "$NAIVE" "$TOKIO"

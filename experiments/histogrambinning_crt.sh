@@ -2,11 +2,23 @@
 
 set -e
 
-rm -rf /tmp/histogram
+XDF=orc-apps/ImageProcessing/src/image/xdf/io/TestHistogramBinning.xdf
+SRC=orc-apps/ImageProcessing/src
+BIN=testhistogrambinning
+NAIVE=/tmp/histogram_naive
+TOKIO=/tmp/histogram_tokio
 
-cargo r -r -- orc-apps/ImageProcessing/src/image/xdf/io/TestHistogramBinning.xdf orc-apps/ImageProcessing/src --out /tmp/histogram
-cargo b -r --manifest-path /tmp/histogram/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-/tmp/histogram/target/release/testhistogrambinning
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/histogram
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+echo "=== naive ==="
+timeout 5 "$NAIVE/target/release/$BIN" || true
+echo "=== tokio ==="
+timeout 5 "$TOKIO/target/release/$BIN" || true
+
+rm -rf "$NAIVE" "$TOKIO"

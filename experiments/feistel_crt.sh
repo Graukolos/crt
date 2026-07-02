@@ -2,11 +2,22 @@
 
 set -e
 
-rm -rf /tmp/feistel
+XDF=orc-apps/Crypto/CTL/Block_Ciphers/Feistel_Networks/Feistel.xdf
+SRC=orc-apps/Crypto/CTL
+BIN=feistel
+NAIVE=/tmp/feistel_naive
+TOKIO=/tmp/feistel_tokio
 
-cargo r -r -- orc-apps/Crypto/CTL/Block_Ciphers/Feistel_Networks/Feistel.xdf orc-apps/Crypto/CTL --out /tmp/feistel
-cargo b -r --manifest-path /tmp/feistel/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-hyperfine --warmup 3 -N /tmp/feistel/target/release/feistel
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/feistel
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+hyperfine --warmup 3 -N \
+  -n naive "$NAIVE/target/release/$BIN" \
+  -n tokio "$TOKIO/target/release/$BIN"
+
+rm -rf "$NAIVE" "$TOKIO"

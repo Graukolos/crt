@@ -2,9 +2,17 @@
 
 set -e
 
-rm -rf /tmp/simple
+XDF=orc-apps/Basic/src/sdf/Simple.xdf
+SRC=orc-apps/Basic/src
+NAIVE=/tmp/simple_naive
+TOKIO=/tmp/simple_tokio
 
-cargo r -r -- orc-apps/Basic/src/sdf/Simple.xdf orc-apps/Basic/src --out /tmp/simple
-cargo b -r --manifest-path /tmp/simple/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-rm -rf /tmp/simple
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
+
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+rm -rf "$NAIVE" "$TOKIO"

@@ -2,11 +2,22 @@
 
 set -e
 
-rm -rf /tmp/iir
+XDF=orc-apps/Filters/src/iir/IIR.xdf
+SRC=orc-apps/Filters/src
+BIN=iir
+NAIVE=/tmp/iir_naive
+TOKIO=/tmp/iir_tokio
 
-cargo r -r -- orc-apps/Filters/src/iir/IIR.xdf orc-apps/Filters/src --out /tmp/iir
-cargo b -r --manifest-path /tmp/iir/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-hyperfine --warmup 3 -N /tmp/iir/target/release/iir
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/iir
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+hyperfine --warmup 3 -N \
+  -n naive "$NAIVE/target/release/$BIN" \
+  -n tokio "$TOKIO/target/release/$BIN"
+
+rm -rf "$NAIVE" "$TOKIO"

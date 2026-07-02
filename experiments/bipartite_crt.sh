@@ -2,11 +2,23 @@
 
 set -e
 
-rm -rf /tmp/bipartite
+XDF=orc-apps/Basic/src/sdf/Bipartite.xdf
+SRC=orc-apps/Basic/src
+BIN=bipartite
+NAIVE=/tmp/bipartite_naive
+TOKIO=/tmp/bipartite_tokio
 
-cargo r -r -- orc-apps/Basic/src/sdf/Bipartite.xdf orc-apps/Basic/src --out /tmp/bipartite
-cargo b -r --manifest-path /tmp/bipartite/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-/tmp/bipartite/target/release/bipartite
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/bipartite
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+echo "=== naive ==="
+timeout 5 "$NAIVE/target/release/$BIN" || true
+echo "=== tokio ==="
+timeout 5 "$TOKIO/target/release/$BIN" || true
+
+rm -rf "$NAIVE" "$TOKIO"

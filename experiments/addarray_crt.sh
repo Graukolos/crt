@@ -2,11 +2,22 @@
 
 set -e
 
-rm -rf /tmp/addarray
+XDF=orc-apps/AddArray/src/xdf/TopAddArray.xdf
+SRC=orc-apps/AddArray/src
+BIN=topaddarray
+NAIVE=/tmp/addarray_naive
+TOKIO=/tmp/addarray_tokio
 
-cargo r -r -- orc-apps/AddArray/src/xdf/TopAddArray.xdf orc-apps/AddArray/src --out /tmp/addarray
-cargo b -r --manifest-path /tmp/addarray/Cargo.toml
+rm -rf "$NAIVE" "$TOKIO"
 
-hyperfine --warmup 3 -N /tmp/addarray/target/release/topaddarray
+cargo r -r -- "$XDF" "$SRC" --out "$NAIVE" --backend naive
+cargo b -r --manifest-path "$NAIVE/Cargo.toml"
 
-rm -rf /tmp/addarray
+cargo r -r -- "$XDF" "$SRC" --out "$TOKIO" --backend tokio
+cargo b -r --manifest-path "$TOKIO/Cargo.toml"
+
+hyperfine --warmup 3 -N \
+  -n naive "$NAIVE/target/release/$BIN" \
+  -n tokio "$TOKIO/target/release/$BIN"
+
+rm -rf "$NAIVE" "$TOKIO"
