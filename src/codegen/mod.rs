@@ -1,6 +1,7 @@
 mod common;
 mod naive;
 mod orcc;
+mod tokio;
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -22,10 +23,11 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub fn generator(self) -> Option<Box<dyn CodeGenerator>> {
+    pub fn generator(self, cap: usize) -> Option<Box<dyn CodeGenerator>> {
         match self {
             Backend::Naive => Some(Box::new(naive::Naive)),
-            Backend::Rayon | Backend::Tokio => None,
+            Backend::Tokio => Some(Box::new(tokio::Tokio { cap })),
+            Backend::Rayon => None,
         }
     }
 }
@@ -58,11 +60,17 @@ pub trait CodeGenerator {
     fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()>;
 }
 
-pub fn write_cargo_toml(out_dir: &Path, package_name: &str, has_natives: bool) -> io::Result<()> {
+pub fn write_cargo_toml(
+    out_dir: &Path,
+    package_name: &str,
+    has_natives: bool,
+    extra_deps: &str,
+) -> io::Result<()> {
     let name = cargo_package_name(package_name);
     let mut contents = format!(
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n"
     );
+    contents.push_str(extra_deps);
     if has_natives {
         contents.push_str("clap = { version = \"4\", features = [\"derive\"] }\n");
         contents.push_str("\n[build-dependencies]\ncc = \"1\"\n");

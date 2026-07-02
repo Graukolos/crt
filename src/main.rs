@@ -25,6 +25,8 @@ struct Cli {
     backend: Backend,
     #[arg(long)]
     native_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 1024)]
+    cap: usize,
 }
 
 fn main() -> Result<()> {
@@ -88,7 +90,7 @@ fn main() -> Result<()> {
         }
     }
 
-    let Some(generator) = args.backend.generator() else {
+    let Some(generator) = args.backend.generator(args.cap) else {
         eprintln!("the {:?} backend is not implemented yet", args.backend);
         std::process::exit(1);
     };
