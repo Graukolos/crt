@@ -5,11 +5,11 @@ use std::path::Path;
 use crate::codegen::common::*;
 use crate::codegen::{CodeGenerator, Program};
 
-pub struct Naive;
+pub struct Rayon;
 
-impl CodeGenerator for Naive {
+impl CodeGenerator for Rayon {
     fn name(&self) -> &'static str {
-        "naive"
+        "rayon"
     }
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()> {
@@ -25,7 +25,7 @@ impl CodeGenerator for Naive {
             })?;
             super::write_rust(&src_dir.join(&name), tokens)?;
         }
-        super::write_cargo_toml(out_dir, &program.network.name, program.has_natives(), "")?;
+        super::write_cargo_toml(out_dir, &program.network.name, program.has_natives(), "rayon = \"1\"\n")?;
         if program.has_natives() {
             super::write_native_support(out_dir, program.native_sources)?;
         }
@@ -51,12 +51,14 @@ fn emit_files(program: &Program<'_>) -> Vec<(String, String)> {
 
     let mut main = String::new();
     main.push_str("#![allow(warnings)]\n");
-    main.push_str("use std::collections::VecDeque;\n\n");
+    main.push_str("use std::collections::VecDeque;\n");
+    main.push_str("use std::sync::atomic::{AtomicBool, Ordering};\n\n");
     for class in &classes {
         let actor = &program.actors[*class];
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
+    main.push_str("const ROUND_BUDGET: usize = 1024;\n\n");
     main.push_str(&emit_shared_decls(program));
     main.push_str(&emit_main(program));
     files.push(("main.rs".to_string(), main));
@@ -67,17 +69,23 @@ fn emit_files(program: &Program<'_>) -> Vec<(String, String)> {
 fn emit_main(program: &Program<'_>) -> String {
     let (instances, mut out) = emit_main_prelude(program);
 
-    out.push_str("    loop {\n        let mut progress = false;\n");
+    out.push_str("    loop {\n");
+    out.push_str("        let progress = AtomicBool::new(false);\n");
+    out.push_str("        rayon::scope(|s| {\n");
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
-        let _ = write!(
+        let _ = writeln!(
             out,
-            "        if {}.fire({}) {{\n{}            progress = true;\n        }}\n",
+            "            s.spawn(|_| {{ let mut __n = 0usize; while __n < ROUND_BUDGET && {}.fire({}) {{ progress.store(true, Ordering::Relaxed); __n += 1; }} }});",
             inst_var(&inst.id),
-            fire_args(inst, actor),
-            distribute(program, inst, actor)
+            fire_args(inst, actor)
         );
     }
-    out.push_str("        if !progress {\n            break;\n        }\n    }\n}\n");
+    out.push_str("        });\n");
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        out.push_str(&distribute(program, inst, actor));
+    }
+    out.push_str("        if !progress.load(Ordering::Relaxed) {\n            break;\n        }\n    }\n}\n");
     out
 }

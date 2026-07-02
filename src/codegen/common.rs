@@ -1010,3 +1010,102 @@ fn emit_action_body(action: &Action, state: &HashSet<String>, fsm_next: Option<&
     }
     out
 }
+
+pub fn emit_main_prelude<'a>(program: &Program<'a>) -> (Vec<&'a Instance>, String) {
+    let network = program.network;
+    let instances: Vec<&Instance> = network
+        .instances
+        .iter()
+        .filter(|i| program.actors.contains_key(&i.class_name))
+        .collect();
+
+    let mut out = String::from("fn main() {\n");
+
+    if program.has_natives() {
+        out.push_str(super::orcc::MAIN_SETUP);
+    }
+
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        for port in &actor.inports {
+            let _ = writeln!(
+                out,
+                "    let mut {}: VecDeque<{}> = VecDeque::new();",
+                fifo_in(&inst.id, &port.name),
+                rust_type(&port.typ)
+            );
+        }
+        for port in &actor.outports {
+            let _ = writeln!(
+                out,
+                "    let mut {}: VecDeque<{}> = VecDeque::new();",
+                fifo_out(&inst.id, &port.name),
+                rust_type(&port.typ)
+            );
+        }
+    }
+
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        let args = instance_args(inst, actor);
+        let _ = writeln!(
+            out,
+            "    let mut {} = {}::{}::new({args});",
+            inst_var(&inst.id),
+            actor_mod(&actor.name),
+            type_ident(&actor.name)
+        );
+    }
+
+    for inst in &instances {
+        let actor = &program.actors[&inst.class_name];
+        if actor.init.is_some() {
+            let _ = writeln!(
+                out,
+                "    {}.init({});",
+                inst_var(&inst.id),
+                fire_args(inst, actor)
+            );
+        }
+    }
+
+    (instances, out)
+}
+
+pub fn fire_args(inst: &Instance, actor: &Actor) -> String {
+    let mut parts = Vec::new();
+    for port in &actor.inports {
+        parts.push(format!("&mut {}", fifo_in(&inst.id, &port.name)));
+    }
+    for port in &actor.outports {
+        parts.push(format!("&mut {}", fifo_out(&inst.id, &port.name)));
+    }
+    parts.join(", ")
+}
+
+pub fn distribute(program: &Program<'_>, inst: &Instance, actor: &Actor) -> String {
+    let mut out = String::new();
+    for port in &actor.outports {
+        let targets: Vec<String> = program
+            .network
+            .edges
+            .iter()
+            .filter(|e| e.src_id == inst.id && e.src_port == port.name)
+            .map(|e| fifo_in(&e.dst_id, &e.dst_port))
+            .collect();
+        let staging = fifo_out(&inst.id, &port.name);
+        if targets.is_empty() {
+            let _ = writeln!(out, "            {staging}.clear();");
+        } else {
+            let _ = writeln!(
+                out,
+                "            while let Some(token) = {staging}.pop_front() {{"
+            );
+            for target in &targets {
+                let _ = writeln!(out, "                {target}.push_back(token);");
+            }
+            out.push_str("            }\n");
+        }
+    }
+    out
+}

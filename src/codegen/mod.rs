@@ -1,6 +1,7 @@
 mod common;
 mod naive;
 mod orcc;
+mod rayon;
 mod tokio;
 
 use std::collections::HashMap;
@@ -27,7 +28,7 @@ impl Backend {
         match self {
             Backend::Naive => Some(Box::new(naive::Naive)),
             Backend::Tokio => Some(Box::new(tokio::Tokio { cap })),
-            Backend::Rayon => None,
+            Backend::Rayon => Some(Box::new(rayon::Rayon)),
         }
     }
 }
