@@ -4,18 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1"
 clap = { version = "4.6.1", features = ["derive"] }
-cxx = "1.0.194"
-env_logger = "0.11.10"
-log = "0.4.32"
-prettyplease = "0.2.37"
-proc-macro2 = "1.0.95"
-syn = { version = "2.0.117", features = ["full"] }
+cxx = "1"
+env_logger = "0.11"
+log = "0.4"
+prettyplease = "0.2"
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
 
 [build-dependencies]
-cxx-build = "1.0.194"
-
-[profile.release]
-lto = true
-codegen-units = 1
+cxx-build = "1"
