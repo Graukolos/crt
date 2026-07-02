@@ -16,14 +16,18 @@ impl CodeGenerator for Naive {
     }
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()> {
-        let source = emit_program(program);
-        let tokens = source.parse().map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("generated source failed to tokenize: {err}\n--- source ---\n{source}"),
-            )
-        })?;
-        super::write_rust(&out_dir.join("src").join("main.rs"), tokens)?;
+        let src_dir = out_dir.join("src");
+        for (name, source) in emit_files(program) {
+            let tokens = source.parse().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "generated source for {name} failed to tokenize: {err}\n--- source ---\n{source}"
+                    ),
+                )
+            })?;
+            super::write_rust(&src_dir.join(&name), tokens)?;
+        }
         super::write_cargo_toml(out_dir, &program.network.name, program.has_natives())?;
         if program.has_natives() {
             super::write_native_support(out_dir, program.native_sources)?;
@@ -32,16 +36,42 @@ impl CodeGenerator for Naive {
     }
 }
 
-fn emit_program(program: &Program<'_>) -> String {
-    let mut out = String::new();
-    out.push_str("#![allow(warnings)]\n");
-    out.push_str("use std::collections::VecDeque;\n\n");
-    out.push_str(&emit_decls(program));
-    out.push_str(&emit_main(program));
-    out
+fn emit_files(program: &Program<'_>) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+
+    let mut classes: Vec<&String> = program.actors.keys().collect();
+    classes.sort();
+
+    for class in &classes {
+        let actor = &program.actors[*class];
+        let mut src = String::new();
+        src.push_str("#![allow(warnings)]\n");
+        src.push_str("use std::collections::VecDeque;\n");
+        src.push_str("use super::*;\n\n");
+        src.push_str(&emit_actor(actor));
+        files.push((format!("{}.rs", actor_mod(&actor.name)), src));
+    }
+
+    let mut main = String::new();
+    main.push_str("#![allow(warnings)]\n");
+    main.push_str("use std::collections::VecDeque;\n\n");
+    for class in &classes {
+        let actor = &program.actors[*class];
+        let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
+    }
+    main.push('\n');
+    main.push_str(&emit_shared_decls(program));
+    main.push_str(&emit_main(program));
+    files.push(("main.rs".to_string(), main));
+
+    files
 }
 
-pub fn emit_decls(program: &Program<'_>) -> String {
+fn actor_mod(name: &str) -> String {
+    format!("m_{}", ident(name))
+}
+
+fn emit_shared_decls(program: &Program<'_>) -> String {
     let mut out = String::new();
 
     let mut consts = String::new();
@@ -91,13 +121,6 @@ pub fn emit_decls(program: &Program<'_>) -> String {
         out.push('\n');
     }
 
-    let class_names: Vec<&String> = program.actors.keys().collect();
-    for class in class_names {
-        let actor = &program.actors[class];
-        out.push_str(&emit_actor(actor));
-        out.push('\n');
-    }
-
     out
 }
 
@@ -134,7 +157,7 @@ fn emit_actor(actor: &Actor) -> String {
     if actor.fsm.is_some() {
         fields.push(format!("    state: {ty}State,"));
     }
-    let _ = write!(out, "struct {ty} {{\n{}\n}}\n\n", fields.join("\n"));
+    let _ = write!(out, "pub struct {ty} {{\n{}\n}}\n\n", fields.join("\n"));
 
     let params = actor
         .parameters
@@ -161,7 +184,7 @@ fn emit_actor(actor: &Actor) -> String {
     }
     let _ = write!(
         out,
-        "impl {ty} {{\n    fn new({params}) -> Self {{\n{lets}        Self {{\n{}\n        }}\n    }}\n\n",
+        "impl {ty} {{\n    pub fn new({params}) -> Self {{\n{lets}        Self {{\n{}\n        }}\n    }}\n\n",
         inits.join("\n")
     );
 
@@ -169,14 +192,14 @@ fn emit_actor(actor: &Actor) -> String {
         let body = emit_action_body(init, &state, None);
         let _ = write!(
             out,
-            "    fn init(&mut self{}) {{\n{body}\n    }}\n\n",
+            "    pub fn init(&mut self{}) {{\n{body}\n    }}\n\n",
             port_params(actor)
         );
     }
 
     let _ = write!(
         out,
-        "    fn fire(&mut self{}) -> bool {{\n{}\n        false\n    }}\n}}\n",
+        "    pub fn fire(&mut self{}) -> bool {{\n{}\n        false\n    }}\n}}\n",
         port_params(actor),
         emit_fire(actor, &state, &ty)
     );
@@ -427,8 +450,9 @@ fn emit_main(program: &Program<'_>) -> String {
             .join(", ");
         let _ = writeln!(
             out,
-            "    let mut {} = {}::new({args});",
+            "    let mut {} = {}::{}::new({args});",
             inst_var(&inst.id),
+            actor_mod(&actor.name),
             type_ident(&actor.name)
         );
     }
