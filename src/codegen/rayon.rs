@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::codegen::common::*;
+use crate::codegen::common::{emit_actor, actor_mod, emit_shared_decls, emit_main_prelude, inst_var, fire_args, distribute};
 use crate::codegen::{CodeGenerator, Program};
 
 pub struct Rayon;

@@ -90,10 +90,7 @@ fn main() -> Result<()> {
         }
     }
 
-    let Some(generator) = args.backend.generator(args.cap) else {
-        eprintln!("the {:?} backend is not implemented yet", args.backend);
-        std::process::exit(1);
-    };
+    let generator = args.backend.generator(args.cap);
 
     let native_dir = args.native_dir.or_else(|| {
         let convention = args.source_dir.join("..").join("lib").join("native");

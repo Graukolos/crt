@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 
 use crate::ast::Actor;
-use crate::codegen::common::*;
+use crate::codegen::common::{emit_actor, actor_mod, emit_shared_decls, port_ref, ident, type_ident, rust_type, instance_args, inst_var};
 use crate::codegen::{CodeGenerator, Program};
 use crate::network_ffi::ffi::Instance;
 

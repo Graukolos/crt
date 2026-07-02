@@ -24,11 +24,11 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub fn generator(self, cap: usize) -> Option<Box<dyn CodeGenerator>> {
+    pub fn generator(self, cap: usize) -> Box<dyn CodeGenerator> {
         match self {
-            Backend::Naive => Some(Box::new(naive::Naive)),
-            Backend::Tokio => Some(Box::new(tokio::Tokio { cap })),
-            Backend::Rayon => Some(Box::new(rayon::Rayon)),
+            Backend::Naive => Box::new(naive::Naive),
+            Backend::Tokio => Box::new(tokio::Tokio { cap }),
+            Backend::Rayon => Box::new(rayon::Rayon),
         }
     }
 }
