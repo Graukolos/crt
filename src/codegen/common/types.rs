@@ -111,4 +111,3 @@ pub fn param_value(t: &Type, value: &str) -> String {
         _ => value.to_string(),
     }
 }
-

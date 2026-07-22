@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 
 use crate::ast::{Action, Actor, InputPattern};
 
-use super::{type_ident, fsm_variant, ident, rust_type, var_rust_type, var_init, port_ref, emit_expr, emit_vardefs, emit_stmt};
+use super::{
+    emit_expr, emit_stmt, emit_vardefs, fsm_variant, ident, port_ref, rust_type, type_ident,
+    var_init, var_rust_type,
+};
 
 pub fn emit_actor(actor: &Actor) -> String {
     let ty = type_ident(&actor.name);
@@ -277,4 +280,3 @@ fn emit_action_body(action: &Action, state: &HashSet<String>, fsm_next: Option<&
     }
     out
 }
-

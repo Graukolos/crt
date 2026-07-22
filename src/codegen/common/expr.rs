@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use crate::ast::{Expr, Generator, Stmt, VarDef};
 
-use super::{ident, rust_type, var_default, var_rust_type, port_ref, type_ident, fsm_variant};
+use super::{fsm_variant, ident, port_ref, rust_type, type_ident, var_default, var_rust_type};
 
 pub fn emit_function(f: &crate::ast::Function) -> String {
     let params = f
@@ -341,4 +341,3 @@ fn map_unary(op: &str) -> &str {
         other => other,
     }
 }
-

@@ -3,7 +3,10 @@ use std::io;
 use std::path::Path;
 
 use crate::ast::Actor;
-use crate::codegen::common::{emit_actor, actor_mod, emit_shared_decls, port_ref, ident, type_ident, rust_type, instance_args, inst_var};
+use crate::codegen::common::{
+    actor_mod, emit_actor, emit_shared_decls, ident, inst_var, instance_args, port_ref, rust_type,
+    type_ident,
+};
 use crate::codegen::{CodeGenerator, Program};
 use crate::network_ffi::ffi::Instance;
 
@@ -59,7 +62,7 @@ impl CodeGenerator for Tokio {
         "tokio"
     }
 
-    fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()> {
+    fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
         for (name, source) in emit_files(program, self.cap) {
             let tokens = source.parse().map_err(|err| {
@@ -73,9 +76,15 @@ impl CodeGenerator for Tokio {
             super::write_rust(&src_dir.join(&name), tokens)?;
         }
         let deps = "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\"] }\ntokio-util = \"0.7\"\n";
-        super::write_cargo_toml(out_dir, &program.network.name, program.has_natives(), deps)?;
+        super::write_cargo_toml(
+            out_dir,
+            &program.network.name,
+            program.has_natives(),
+            deps,
+            orcc,
+        )?;
         if program.has_natives() {
-            super::write_native_support(out_dir, program.native_sources)?;
+            super::write_native_support(out_dir, program.native_sources, orcc)?;
         }
         Ok(())
     }
@@ -255,7 +264,10 @@ fn emit_main(program: &Program<'_>, unbounded: bool) -> String {
                     rust_type(&p.typ)
                 )
             } else {
-                format!("tokio::sync::mpsc::channel::<Vec<{}>>(CAP)", rust_type(&p.typ))
+                format!(
+                    "tokio::sync::mpsc::channel::<Vec<{}>>(CAP)",
+                    rust_type(&p.typ)
+                )
             };
             let _ = writeln!(
                 out,

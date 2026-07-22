@@ -5,7 +5,10 @@ use crate::ast::Actor;
 use crate::codegen::Program;
 use crate::network_ffi::ffi::Instance;
 
-use super::{emit_const, emit_natives, emit_function, emit_procedure, param_value, emit_expr, default_value, fifo_in, rust_type, fifo_out, inst_var, actor_mod, type_ident};
+use super::{
+    actor_mod, default_value, emit_const, emit_expr, emit_function, emit_natives, emit_procedure,
+    fifo_in, fifo_out, inst_var, param_value, rust_type, type_ident,
+};
 
 pub fn emit_shared_decls(program: &Program<'_>) -> String {
     let mut out = String::new();
@@ -77,7 +80,6 @@ pub fn instance_args(inst: &Instance, actor: &Actor) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-
 
 pub fn emit_main_prelude<'a>(program: &Program<'a>) -> (Vec<&'a Instance>, String) {
     let network = program.network;

@@ -177,4 +177,3 @@ fn eval_lit(expr: &Expr) -> Option<u32> {
         _ => None,
     }
 }
-

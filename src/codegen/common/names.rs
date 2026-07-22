@@ -42,4 +42,3 @@ pub fn fifo_out(id: &str, port: &str) -> String {
 pub fn actor_mod(name: &str) -> String {
     format!("m_{}", ident(name))
 }
-

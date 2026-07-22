@@ -58,7 +58,7 @@ impl Program<'_> {
 pub trait CodeGenerator {
     fn name(&self) -> &'static str;
 
-    fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()>;
+    fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()>;
 }
 
 pub fn write_cargo_toml(
@@ -66,6 +66,7 @@ pub fn write_cargo_toml(
     package_name: &str,
     has_natives: bool,
     extra_deps: &str,
+    orcc: bool,
 ) -> io::Result<()> {
     let name = cargo_package_name(package_name);
     let mut contents = format!(
@@ -73,28 +74,30 @@ pub fn write_cargo_toml(
     );
     contents.push_str(extra_deps);
     if has_natives {
-        contents.push_str("clap = { version = \"4\", features = [\"derive\"] }\n");
+        if orcc {
+            contents.push_str("clap = { version = \"4\", features = [\"derive\"] }\n");
+        }
         contents.push_str("\n[build-dependencies]\ncc = \"1\"\n");
     }
     contents.push_str("\n[profile.release]\nlto = true\ncodegen-units = 1\n");
     write_file(&out_dir.join("Cargo.toml"), &contents)
 }
 
-pub fn write_native_support(out_dir: &Path, native_sources: &[PathBuf]) -> io::Result<()> {
+pub fn write_native_support(
+    out_dir: &Path,
+    native_sources: &[PathBuf],
+    orcc: bool,
+) -> io::Result<()> {
     let native_dir = out_dir.join("native");
     fs::create_dir_all(&native_dir)?;
 
     let mut translation_units = Vec::new();
-    let mut have_options_h = false;
     for src in native_sources {
         let Some(file_name) = src.file_name() else {
             continue;
         };
         fs::copy(src, native_dir.join(file_name))?;
         let name = file_name.to_string_lossy().to_string();
-        if name == "options.h" {
-            have_options_h = true;
-        }
         if let Some(ext) = src.extension().and_then(|e| e.to_str())
             && matches!(
                 ext.to_ascii_lowercase().as_str(),
@@ -105,7 +108,7 @@ pub fn write_native_support(out_dir: &Path, native_sources: &[PathBuf]) -> io::R
         }
     }
 
-    if !have_options_h {
+    if orcc {
         write_file(&native_dir.join("options.h"), orcc::OPTIONS_H)?;
     }
 

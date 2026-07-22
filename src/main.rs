@@ -27,6 +27,8 @@ struct Cli {
     native_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 1024)]
     cap: usize,
+    #[arg(long)]
+    orcc: bool,
 }
 
 fn main() -> Result<()> {
@@ -81,7 +83,10 @@ fn main() -> Result<()> {
         let raw = match ffi::ffi::parse_cal(&code) {
             Ok(ast) => ast,
             Err(e) => {
-                eprintln!("warning: skipping imported {}: parse error: {e}", file.display());
+                eprintln!(
+                    "warning: skipping imported {}: parse error: {e}",
+                    file.display()
+                );
                 continue;
             }
         };
@@ -114,7 +119,7 @@ fn main() -> Result<()> {
         units: &units,
         native_sources: &native_sources,
     };
-    generator.generate(&program, &args.out)?;
+    generator.generate(&program, &args.out, args.orcc)?;
     eprintln!(
         "generated {} program for network '{}' in {}",
         generator.name(),

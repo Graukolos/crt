@@ -2,7 +2,9 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::codegen::common::{emit_actor, actor_mod, emit_shared_decls, emit_main_prelude, inst_var, fire_args, distribute};
+use crate::codegen::common::{
+    actor_mod, distribute, emit_actor, emit_main_prelude, emit_shared_decls, fire_args, inst_var,
+};
 use crate::codegen::{CodeGenerator, Program};
 
 pub struct Rayon;
@@ -12,7 +14,7 @@ impl CodeGenerator for Rayon {
         "rayon"
     }
 
-    fn generate(&self, program: &Program<'_>, out_dir: &Path) -> io::Result<()> {
+    fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
         for (name, source) in emit_files(program) {
             let tokens = source.parse().map_err(|err| {
@@ -25,9 +27,15 @@ impl CodeGenerator for Rayon {
             })?;
             super::write_rust(&src_dir.join(&name), tokens)?;
         }
-        super::write_cargo_toml(out_dir, &program.network.name, program.has_natives(), "rayon = \"1\"\n")?;
+        super::write_cargo_toml(
+            out_dir,
+            &program.network.name,
+            program.has_natives(),
+            "rayon = \"1\"\n",
+            orcc,
+        )?;
         if program.has_natives() {
-            super::write_native_support(out_dir, program.native_sources)?;
+            super::write_native_support(out_dir, program.native_sources, orcc)?;
         }
         Ok(())
     }
@@ -86,6 +94,8 @@ fn emit_main(program: &Program<'_>) -> String {
         let actor = &program.actors[&inst.class_name];
         out.push_str(&distribute(program, inst, actor));
     }
-    out.push_str("        if !progress.load(Ordering::Relaxed) {\n            break;\n        }\n    }\n}\n");
+    out.push_str(
+        "        if !progress.load(Ordering::Relaxed) {\n            break;\n        }\n    }\n}\n",
+    );
     out
 }
