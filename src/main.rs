@@ -47,7 +47,7 @@ fn main() -> Result<()> {
 
     let mut actors = HashMap::new();
     let mut units = Vec::new();
-    let mut import_paths: Vec<String> = Vec::new();
+    let mut import_paths: HashSet<String> = HashSet::new();
     for class in &network.class_paths {
         let code = std::fs::read_to_string(&class.path)?;
         let raw = match ffi::ffi::parse_cal(&code) {

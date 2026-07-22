@@ -118,7 +118,6 @@ pub fn write_native_support(out_dir: &Path, native_sources: &[PathBuf]) -> io::R
     let build_rs = format!(
         "fn main() {{\n    \
          cc::Build::new()\n        \
-         .flag(\"-x\")\n        .flag(\"c\")\n        \
          .include(\"native\")\n        .opt_level(3)\n{files}        \
          .compile(\"crt_native\");\n    \
          println!(\"cargo:rerun-if-changed=native\");\n}}\n"
