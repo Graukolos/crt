@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include "options.h"
 
+// opt is defined in util.c
+extern options_t *opt;
+
 FILE *input = NULL;
 FILE *output = NULL;
 

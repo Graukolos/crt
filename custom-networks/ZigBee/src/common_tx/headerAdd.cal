@@ -65,7 +65,7 @@ uint(size=PAYLOAD_LEN_SZ) len        // header + payload length
 	// get_data_len action
 	// wait for packet to be available
 	// send payload length information to pulse shaper
-	get_data_len : action pl_bits:[ bits_in ] ==> len: [ octet_count ]
+	get_data_len: action pl_bits:[ bits_in ] ==> len: [ octet_count ]
 	do
 		octet_index := 0;
 		octet_count := bits_in + HEADER_LEN + 1;
