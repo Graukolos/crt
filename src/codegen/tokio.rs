@@ -14,49 +14,6 @@ pub struct Tokio {
     pub cap: usize,
 }
 
-const TERM_RS: &str = r"use std::sync::{Arc, Mutex};
-use tokio_util::sync::CancellationToken;
-
-struct Term {
-    inner: Mutex<(usize, usize, usize)>,
-    token: CancellationToken,
-}
-
-impl Term {
-    fn new(total: usize) -> Arc<Self> {
-        Arc::new(Self {
-            inner: Mutex::new((0, total, 0)),
-            token: CancellationToken::new(),
-        })
-    }
-    fn check(state: &(usize, usize, usize), token: &CancellationToken) {
-        let (idle, alive, inflight) = *state;
-        if inflight == 0 && idle >= alive {
-            token.cancel();
-        }
-    }
-    fn sent(&self) {
-        self.inner.lock().unwrap().2 += 1;
-    }
-    fn got(&self) {
-        self.inner.lock().unwrap().2 -= 1;
-    }
-    fn enter_idle(&self) {
-        let mut state = self.inner.lock().unwrap();
-        state.0 += 1;
-        Self::check(&state, &self.token);
-    }
-    fn leave_idle(&self) {
-        self.inner.lock().unwrap().0 -= 1;
-    }
-    fn finish(&self) {
-        let mut state = self.inner.lock().unwrap();
-        state.1 -= 1;
-        Self::check(&state, &self.token);
-    }
-}
-";
-
 impl CodeGenerator for Tokio {
     fn name(&self) -> &'static str {
         "tokio"
@@ -75,7 +32,8 @@ impl CodeGenerator for Tokio {
             })?;
             super::write_rust(&src_dir.join(&name), tokens)?;
         }
-        let deps = "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\"] }\ntokio-util = \"0.7\"\n";
+        let deps =
+            "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\"] }\n";
         super::write_cargo_toml(
             out_dir,
             &program.network.name,
@@ -102,7 +60,6 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
         let mut src = String::new();
         src.push_str("#![allow(warnings)]\n");
         src.push_str("use std::collections::VecDeque;\n");
-        src.push_str("use std::sync::Arc;\n");
         if unbounded {
             src.push_str("use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};\n");
         } else {
@@ -125,8 +82,6 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
     if !unbounded {
         let _ = writeln!(main, "const CAP: usize = {cap};\n");
     }
-    main.push_str(TERM_RS);
-    main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
     main.push_str(&emit_main(program, unbounded));
     files.push(("main.rs".to_string(), main));
@@ -154,7 +109,7 @@ fn emit_flush(actor: &Actor, unbounded: bool) -> String {
             out,
             "if !{buf}.is_empty() {{ \
              let __chunk: Vec<_> = {buf}.drain(..).collect(); \
-             for __tx in &tx_{id} {{ term.sent(); let _ = __tx.send(__chunk.clone()){send_await}; }} }}"
+             for __tx in &tx_{id} {{ let _ = __tx.send(__chunk.clone()){send_await}; }} }}"
         );
     }
     out
@@ -169,7 +124,7 @@ fn emit_task_run(actor: &Actor, unbounded: bool) -> String {
     let ty = type_ident(&actor.name);
     let run = format!("run_{}", ident(&actor.name));
 
-    let mut params = vec![format!("mut __actor: {ty}"), "term: Arc<Term>".to_string()];
+    let mut params = vec![format!("mut __actor: {ty}")];
     for p in &actor.inports {
         params.push(format!(
             "mut rx_{}: {rx_ty}<Vec<{}>>",
@@ -218,24 +173,20 @@ fn emit_task_run(actor: &Actor, unbounded: bool) -> String {
             .collect::<Vec<_>>()
             .join(" && ");
         let _ = writeln!(body, "if {all_closed} {{ break; }}");
-        body.push_str("if term.token.is_cancelled() { break; }\n");
-        body.push_str("term.enter_idle();\n");
         body.push_str("tokio::select! {\n");
         body.push_str("biased;\n");
-        body.push_str("_ = term.token.cancelled() => { term.leave_idle(); break; }\n");
         for p in &actor.inports {
             let id = ident(&p.name);
             let _ = writeln!(
                 body,
-                "__m = rx_{id}.recv(), if open_{id} => {{ term.leave_idle(); match __m {{ Some(__c) => {{ term.got(); {}.extend(__c); }} None => {{ open_{id} = false; }} }} }}",
+                "__m = rx_{id}.recv(), if open_{id} => {{ match __m {{ Some(__c) => {{ {}.extend(__c); }} None => {{ open_{id} = false; }} }} }}",
                 port_ref(&p.name)
             );
         }
-        body.push_str("else => { term.leave_idle(); break; }\n");
+        body.push_str("else => { break; }\n");
         body.push_str("}\n");
         body.push_str("}\n");
     }
-    body.push_str("term.finish();\n");
 
     format!("pub async fn {run}({sig}) {{\n{body}}}\n")
 }
@@ -290,11 +241,10 @@ fn emit_main(program: &Program<'_>, unbounded: bool) -> String {
         );
     }
 
-    let _ = writeln!(out, "    let __term = Term::new({});", instances.len());
     out.push_str("    let mut __set = tokio::task::JoinSet::new();\n");
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
-        let mut args = vec![inst_var(&inst.id), "__term.clone()".to_string()];
+        let mut args = vec![inst_var(&inst.id)];
         for p in &actor.inports {
             args.push(format!("rx_{}_{}", ident(&inst.id), ident(&p.name)));
         }

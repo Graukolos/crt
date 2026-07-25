@@ -59,8 +59,7 @@ fn emit_files(program: &Program<'_>, orcc: bool) -> Vec<(String, String)> {
 
     let mut main = String::new();
     main.push_str("#![allow(warnings)]\n");
-    main.push_str("use std::collections::VecDeque;\n");
-    main.push_str("use std::sync::atomic::{AtomicBool, Ordering};\n\n");
+    main.push_str("use std::collections::VecDeque;\n\n");
     for class in &classes {
         let actor = &program.actors[*class];
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
@@ -78,13 +77,12 @@ fn emit_main(program: &Program<'_>, orcc: bool) -> String {
     let (instances, mut out) = emit_main_prelude(program, orcc);
 
     out.push_str("    loop {\n");
-    out.push_str("        let progress = AtomicBool::new(false);\n");
     out.push_str("        rayon::scope(|s| {\n");
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
         let _ = writeln!(
             out,
-            "            s.spawn(|_| {{ let mut __n = 0usize; while __n < ROUND_BUDGET && {}.fire({}) {{ progress.store(true, Ordering::Relaxed); __n += 1; }} }});",
+            "            s.spawn(|_| {{ let mut __n = 0usize; while __n < ROUND_BUDGET && {}.fire({}) {{ __n += 1; }} }});",
             inst_var(&inst.id),
             fire_args(inst, actor)
         );
@@ -94,8 +92,6 @@ fn emit_main(program: &Program<'_>, orcc: bool) -> String {
         let actor = &program.actors[&inst.class_name];
         out.push_str(&distribute(program, inst, actor));
     }
-    out.push_str(
-        "        if !progress.load(Ordering::Relaxed) {\n            break;\n        }\n    }\n}\n",
-    );
+    out.push_str("    }\n}\n");
     out
 }

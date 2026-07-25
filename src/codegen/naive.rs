@@ -75,17 +75,17 @@ fn emit_files(program: &Program<'_>, orcc: bool) -> Vec<(String, String)> {
 fn emit_main(program: &Program<'_>, orcc: bool) -> String {
     let (instances, mut out) = emit_main_prelude(program, orcc);
 
-    out.push_str("    loop {\n        let mut progress = false;\n");
+    out.push_str("    loop {\n");
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
         let _ = write!(
             out,
-            "        if {}.fire({}) {{\n{}            progress = true;\n        }}\n",
+            "        if {}.fire({}) {{\n{}        }}\n",
             inst_var(&inst.id),
             fire_args(inst, actor),
             distribute(program, inst, actor)
         );
     }
-    out.push_str("        if !progress {\n            break;\n        }\n    }\n}\n");
+    out.push_str("    }\n}\n");
     out
 }
