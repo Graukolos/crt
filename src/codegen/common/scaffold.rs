@@ -10,7 +10,7 @@ use super::{
     fifo_in, fifo_out, inst_var, param_value, rust_type, type_ident,
 };
 
-pub fn emit_shared_decls(program: &Program<'_>) -> String {
+pub fn emit_shared_decls(program: &Program<'_>, orcc: bool) -> String {
     let mut out = String::new();
 
     let mut consts = String::new();
@@ -25,7 +25,7 @@ pub fn emit_shared_decls(program: &Program<'_>) -> String {
     }
 
     if program.has_natives() {
-        out.push_str(&emit_natives(program));
+        out.push_str(&emit_natives(program, orcc));
         out.push('\n');
     }
 
@@ -81,7 +81,7 @@ pub fn instance_args(inst: &Instance, actor: &Actor) -> String {
         .join(", ")
 }
 
-pub fn emit_main_prelude<'a>(program: &Program<'a>) -> (Vec<&'a Instance>, String) {
+pub fn emit_main_prelude<'a>(program: &Program<'a>, orcc: bool) -> (Vec<&'a Instance>, String) {
     let network = program.network;
     let instances: Vec<&Instance> = network
         .instances
@@ -91,7 +91,7 @@ pub fn emit_main_prelude<'a>(program: &Program<'a>) -> (Vec<&'a Instance>, Strin
 
     let mut out = String::from("fn main() {\n");
 
-    if program.has_natives() {
+    if program.has_natives() && orcc {
         out.push_str(crate::codegen::orcc::MAIN_SETUP);
     }
 

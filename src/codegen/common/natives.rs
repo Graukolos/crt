@@ -6,7 +6,7 @@ use crate::codegen::Program;
 
 use super::{ident, rust_type};
 
-pub fn emit_natives(program: &Program<'_>) -> String {
+pub fn emit_natives(program: &Program<'_>, orcc: bool) -> String {
     use crate::ast::{NativeFunction, NativeProcedure};
 
     let mut funcs: Vec<&NativeFunction> = Vec::new();
@@ -87,7 +87,9 @@ pub fn emit_natives(program: &Program<'_>) -> String {
     }
 
     out.push('\n');
-    out.push_str(crate::codegen::orcc::OPTIONS_RS);
+    if orcc {
+        out.push_str(crate::codegen::orcc::OPTIONS_RS);
+    }
     out
 }
 

@@ -16,7 +16,7 @@ impl CodeGenerator for Naive {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program) {
+        for (name, source) in emit_files(program, orcc) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -41,7 +41,7 @@ impl CodeGenerator for Naive {
     }
 }
 
-fn emit_files(program: &Program<'_>) -> Vec<(String, String)> {
+fn emit_files(program: &Program<'_>, orcc: bool) -> Vec<(String, String)> {
     let mut files = Vec::new();
 
     let mut classes: Vec<&String> = program.actors.keys().collect();
@@ -65,15 +65,15 @@ fn emit_files(program: &Program<'_>) -> Vec<(String, String)> {
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    main.push_str(&emit_shared_decls(program));
-    main.push_str(&emit_main(program));
+    main.push_str(&emit_shared_decls(program, orcc));
+    main.push_str(&emit_main(program, orcc));
     files.push(("main.rs".to_string(), main));
 
     files
 }
 
-fn emit_main(program: &Program<'_>) -> String {
-    let (instances, mut out) = emit_main_prelude(program);
+fn emit_main(program: &Program<'_>, orcc: bool) -> String {
+    let (instances, mut out) = emit_main_prelude(program, orcc);
 
     out.push_str("    loop {\n        let mut progress = false;\n");
     for inst in &instances {

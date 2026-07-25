@@ -64,7 +64,7 @@ impl CodeGenerator for Tokio {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap) {
+        for (name, source) in emit_files(program, self.cap, orcc) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -90,7 +90,7 @@ impl CodeGenerator for Tokio {
     }
 }
 
-fn emit_files(program: &Program<'_>, cap: usize) -> Vec<(String, String)> {
+fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, String)> {
     let unbounded = cap == 0;
     let mut files = Vec::new();
 
@@ -127,7 +127,7 @@ fn emit_files(program: &Program<'_>, cap: usize) -> Vec<(String, String)> {
     }
     main.push_str(TERM_RS);
     main.push('\n');
-    main.push_str(&emit_shared_decls(program));
+    main.push_str(&emit_shared_decls(program, orcc));
     main.push_str(&emit_main(program, unbounded));
     files.push(("main.rs".to_string(), main));
 
