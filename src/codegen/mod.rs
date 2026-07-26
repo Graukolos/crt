@@ -2,6 +2,7 @@ mod common;
 mod naive;
 mod orcc;
 mod rayon;
+mod threads;
 mod tokio;
 
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ use crate::network_ffi::ffi::Network;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Backend {
     Naive,
+    Threads,
     Rayon,
     Tokio,
 }
@@ -27,6 +29,7 @@ impl Backend {
     pub fn generator(self, cap: usize) -> Box<dyn CodeGenerator> {
         match self {
             Backend::Naive => Box::new(naive::Naive { cap }),
+            Backend::Threads => Box::new(threads::Threads { cap }),
             Backend::Tokio => Box::new(tokio::Tokio { cap }),
             Backend::Rayon => Box::new(rayon::Rayon { cap }),
         }
