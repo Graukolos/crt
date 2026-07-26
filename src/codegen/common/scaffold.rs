@@ -6,8 +6,8 @@ use crate::codegen::Program;
 use crate::network_ffi::ffi::Instance;
 
 use super::{
-    actor_mod, chan_rx, chan_tx, chan_var, default_value, emit_const, emit_expr, emit_function,
-    emit_natives, emit_procedure, inst_var, out_port_ctor, param_value, rust_type, type_ident,
+    actor_mod, actor_type, chan_rx, chan_tx, chan_var, default_value, emit_const, emit_expr,
+    emit_function, emit_natives, emit_procedure, inst_var, out_port_ctor, param_value, rust_type,
 };
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -91,6 +91,7 @@ pub fn emit_main_prelude<'a>(
     program: &Program<'a>,
     orcc: bool,
     channels: Channels,
+    typestate: bool,
 ) -> (Vec<&'a Instance>, String) {
     let network = program.network;
     let instances: Vec<&Instance> = network
@@ -117,7 +118,7 @@ pub fn emit_main_prelude<'a>(
             "    let mut {} = {}::{}::new({});",
             inst_var(&inst.id),
             actor_mod(&actor.name),
-            type_ident(&actor.name),
+            actor_type(actor, typestate),
             args.join(", ")
         );
     }

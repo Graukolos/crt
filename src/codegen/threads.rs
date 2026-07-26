@@ -3,13 +3,14 @@ use std::io;
 use std::path::Path;
 
 use crate::codegen::common::{
-    CROSSBEAM_PORTS, Channels, actor_mod, emit_actor, emit_main_prelude, emit_shared_decls,
-    inst_var, port_field,
+    CROSSBEAM_PORTS, Channels, actor_mod, actor_port, emit_actor, emit_main_prelude,
+    emit_shared_decls, inst_var,
 };
 use crate::codegen::{CodeGenerator, Program};
 
 pub struct Threads {
     pub cap: usize,
+    pub typestate: bool,
 }
 
 impl CodeGenerator for Threads {
@@ -19,7 +20,7 @@ impl CodeGenerator for Threads {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap, orcc) {
+        for (name, source) in emit_files(program, self.cap, orcc, self.typestate) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -44,7 +45,12 @@ impl CodeGenerator for Threads {
     }
 }
 
-fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, String)> {
+fn emit_files(
+    program: &Program<'_>,
+    cap: usize,
+    orcc: bool,
+    typestate: bool,
+) -> Vec<(String, String)> {
     let mut files = Vec::new();
 
     let mut classes: Vec<&String> = program.actors.keys().collect();
@@ -56,7 +62,7 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
         src.push_str("#![allow(warnings)]\n");
         src.push_str("use std::collections::VecDeque;\n");
         src.push_str("use super::*;\n\n");
-        src.push_str(&emit_actor(actor));
+        src.push_str(&emit_actor(actor, typestate));
         files.push((format!("{}.rs", actor_mod(&actor.name)), src));
     }
 
@@ -73,14 +79,14 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
     main.push_str(CROSSBEAM_PORTS);
     main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
-    main.push_str(&emit_main(program, orcc));
+    main.push_str(&emit_main(program, orcc, typestate));
     files.push(("main.rs".to_string(), main));
 
     files
 }
 
-fn emit_main(program: &Program<'_>, orcc: bool) -> String {
-    let (instances, mut out) = emit_main_prelude(program, orcc, Channels::Crossbeam);
+fn emit_main(program: &Program<'_>, orcc: bool, typestate: bool) -> String {
+    let (instances, mut out) = emit_main_prelude(program, orcc, Channels::Crossbeam, typestate);
 
     for inst in &instances {
         let var = inst_var(&inst.id);
@@ -104,7 +110,11 @@ fn emit_main(program: &Program<'_>, orcc: bool) -> String {
         let actor = &program.actors[&inst.class_name];
         let mut pumps = String::new();
         for port in &actor.outports {
-            let _ = write!(pumps, " __actor.{}.pump();", port_field(&port.name));
+            let _ = write!(
+                pumps,
+                " {}.pump();",
+                actor_port(actor, typestate, "__actor", &port.name)
+            );
         }
         let _ = writeln!(
             out,

@@ -1,25 +1,30 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 
-use crate::ast::{Action, Actor, Expr, InputPattern};
+use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm, Stmt};
 
 use super::{
-    emit_expr, emit_stmt, emit_vardefs, fsm_variant, ident, port_field, port_ref, rust_type,
-    type_ident, var_init, var_rust_type,
+    emit_expr, emit_stmt, emit_vardefs, fsm_variant, fsm_wrapper, ident, port_field, port_ref,
+    rust_type, type_ident, var_init, var_rust_type,
 };
 
-pub fn emit_actor(actor: &Actor) -> String {
+pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
+    if typestate && actor.fsm.is_some() && !typestate_actor(actor, typestate) {
+        eprintln!(
+            "warning: actor {}: 'return' inside an action is unsupported by --typestate; emitting the value-based FSM for this actor",
+            actor.name
+        );
+    }
+    if typestate_actor(actor, typestate) {
+        return emit_actor_typestate(actor);
+    }
+
     let ty = type_ident(&actor.name);
     let state = actor_state(actor);
     let mut out = String::new();
 
     if let Some(fsm) = &actor.fsm {
-        let mut states = BTreeSet::new();
-        states.insert(fsm.initial_state.clone());
-        for t in &fsm.transitions {
-            states.insert(t.state.clone());
-            states.insert(t.next.clone());
-        }
+        let states = fsm_states(fsm);
         let variants = states
             .iter()
             .map(|s| format!("    {},", fsm_variant(s)))
@@ -46,19 +51,8 @@ pub fn emit_actor(actor: &Actor) -> String {
     }
     let _ = write!(out, "pub struct {ty} {{\n{}\n}}\n\n", fields.join("\n"));
 
-    let mut params: Vec<String> = actor
-        .parameters
-        .iter()
-        .map(|p| format!("{}: {}", ident(&p.name), rust_type(&p.typ)))
-        .collect();
-    for (name, ty) in port_types(actor) {
-        params.push(format!("{}: {ty}", port_field(&name)));
-    }
-    let params = params.join(", ");
-    let mut lets = String::new();
-    for v in &actor.vars {
-        let _ = writeln!(lets, "        let {} = {};", ident(&v.name), var_init(v));
-    }
+    let params = ctor_params(actor);
+    let lets = ctor_var_lets(actor);
     let mut inits = Vec::new();
     for p in &actor.parameters {
         inits.push(format!("            {},", ident(&p.name)));
@@ -101,6 +95,239 @@ pub fn emit_actor(actor: &Actor) -> String {
         "    pub fn fire(&mut self) -> bool {{\n{}\n        false\n    }}\n}}\n",
         emit_fire(actor, &state, &ty)
     );
+
+    out
+}
+
+fn fsm_states(fsm: &ScheduleFsm) -> BTreeSet<String> {
+    let mut states = BTreeSet::new();
+    states.insert(fsm.initial_state.clone());
+    for t in &fsm.transitions {
+        states.insert(t.state.clone());
+        states.insert(t.next.clone());
+    }
+    states
+}
+
+fn stmts_return(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Return => true,
+        Stmt::If { then, els, .. } => stmts_return(then) || stmts_return(els),
+        Stmt::Block { stmts, .. } | Stmt::While { stmts, .. } | Stmt::Foreach { stmts, .. } => {
+            stmts_return(stmts)
+        }
+        _ => false,
+    })
+}
+
+pub fn typestate_actor(actor: &Actor, typestate: bool) -> bool {
+    typestate
+        && actor.fsm.is_some()
+        && !actor
+            .actions
+            .iter()
+            .chain(actor.init.iter())
+            .any(|action| stmts_return(&action.stmts))
+}
+
+pub fn actor_type(actor: &Actor, typestate: bool) -> String {
+    if typestate_actor(actor, typestate) {
+        fsm_wrapper(&actor.name)
+    } else {
+        type_ident(&actor.name)
+    }
+}
+
+pub fn actor_port(actor: &Actor, typestate: bool, owner: &str, port: &str) -> String {
+    if typestate_actor(actor, typestate) {
+        format!("{owner}.{}_mut()", port_field(port))
+    } else {
+        format!("{owner}.{}", port_field(port))
+    }
+}
+
+fn ctor_params(actor: &Actor) -> String {
+    let mut params: Vec<String> = actor
+        .parameters
+        .iter()
+        .map(|p| format!("{}: {}", ident(&p.name), rust_type(&p.typ)))
+        .collect();
+    for (name, ty) in port_types(actor) {
+        params.push(format!("{}: {ty}", port_field(&name)));
+    }
+    params.join(", ")
+}
+
+fn ctor_args(actor: &Actor) -> String {
+    let mut args: Vec<String> = actor.parameters.iter().map(|p| ident(&p.name)).collect();
+    for (name, _) in port_types(actor) {
+        args.push(port_field(&name));
+    }
+    args.join(", ")
+}
+
+fn ctor_var_lets(actor: &Actor) -> String {
+    let mut lets = String::new();
+    for v in &actor.vars {
+        let _ = writeln!(lets, "        let {} = {};", ident(&v.name), var_init(v));
+    }
+    lets
+}
+
+fn field_names(actor: &Actor) -> Vec<String> {
+    let mut names: Vec<String> = actor.parameters.iter().map(|p| ident(&p.name)).collect();
+    names.extend(actor.vars.iter().map(|v| ident(&v.name)));
+    names.extend(port_types(actor).into_iter().map(|(n, _)| port_field(&n)));
+    names
+}
+
+fn emit_actor_typestate(actor: &Actor) -> String {
+    let ty = type_ident(&actor.name);
+    let wrapper = fsm_wrapper(&actor.name);
+    let fsm = actor.fsm.as_ref().expect("typestate requires an fsm");
+    let state = actor_state(actor);
+    let states = fsm_states(fsm);
+    let names = field_names(actor);
+    let mut out = String::new();
+
+    for s in &states {
+        let _ = writeln!(out, "pub struct {};", fsm_variant(s));
+    }
+    out.push('\n');
+
+    let mut fields = Vec::new();
+    for p in &actor.parameters {
+        fields.push(format!("    {}: {},", ident(&p.name), rust_type(&p.typ)));
+    }
+    for v in &actor.vars {
+        fields.push(format!("    {}: {},", ident(&v.name), var_rust_type(v)));
+    }
+    for (name, port_ty) in port_types(actor) {
+        fields.push(format!("    pub {}: {port_ty},", port_field(&name)));
+    }
+    fields.push("    __state: core::marker::PhantomData<S>,".to_string());
+    let _ = write!(out, "pub struct {ty}<S> {{\n{}\n}}\n\n", fields.join("\n"));
+
+    let inits = names.iter().fold(String::new(), |mut acc, n| {
+        let _ = writeln!(acc, "            {n},");
+        acc
+    });
+    let _ = write!(
+        out,
+        "impl<S> {ty}<S> {{\n    pub fn new({}) -> Self {{\n{}        Self {{\n{inits}            __state: core::marker::PhantomData,\n        }}\n    }}\n\n",
+        ctor_params(actor),
+        ctor_var_lets(actor)
+    );
+
+    let moves = names.iter().fold(String::new(), |mut acc, n| {
+        let _ = writeln!(acc, "            {n}: self.{n},");
+        acc
+    });
+    let _ = write!(
+        out,
+        "    fn into_state<__T>(self) -> {ty}<__T> {{\n        {ty} {{\n{moves}            __state: core::marker::PhantomData,\n        }}\n    }}\n"
+    );
+
+    if let Some(init) = &actor.init {
+        for pattern in &init.input_patterns {
+            eprintln!(
+                "warning: actor {}: initialize action consumes from port {}; it fires only if tokens are already available at startup",
+                actor.name, pattern.port
+            );
+        }
+        let _ = write!(
+            out,
+            "\n    pub fn init(&mut self) {{\n{}{}    }}\n",
+            room_snapshots(std::iter::once(init)),
+            emit_action(init, &state, None, Commit::Fallthrough)
+        );
+    }
+    out.push_str("}\n\n");
+
+    let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
+    for s in &states {
+        let here = fsm_variant(s);
+        let mut reachable = Vec::new();
+        let mut tries = String::new();
+        for t in fsm.transitions.iter().filter(|t| &t.state == s) {
+            let next = format!("{wrapper}::{}", fsm_variant(&t.next));
+            for action_name in &t.actions {
+                if let Some(action) = lookup(action_name) {
+                    reachable.push(action);
+                    tries.push_str(&emit_action(
+                        action,
+                        &state,
+                        None,
+                        Commit::Move(next.as_str()),
+                    ));
+                }
+            }
+        }
+        let _ = write!(
+            out,
+            "impl {ty}<{here}> {{\n    fn step(mut self) -> ({wrapper}, bool) {{\n{}{tries}        ({wrapper}::{here}(self), false)\n    }}\n}}\n\n",
+            room_snapshots(reachable.into_iter())
+        );
+    }
+
+    out.push_str(&emit_fsm_wrapper(actor, &states));
+    out
+}
+
+fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
+    let ty = type_ident(&actor.name);
+    let wrapper = fsm_wrapper(&actor.name);
+    let fsm = actor.fsm.as_ref().expect("typestate requires an fsm");
+    let mut out = String::new();
+
+    let variants = states.iter().fold(String::new(), |mut acc, s| {
+        let v = fsm_variant(s);
+        let _ = writeln!(acc, "    {v}({ty}<{v}>),");
+        acc
+    });
+    let _ = write!(
+        out,
+        "pub enum {wrapper} {{\n{variants}    __Moving,\n}}\n\n"
+    );
+
+    let _ = write!(
+        out,
+        "impl {wrapper} {{\n    pub fn new({}) -> Self {{\n        Self::{}({ty}::new({}))\n    }}\n\n",
+        ctor_params(actor),
+        fsm_variant(&fsm.initial_state),
+        ctor_args(actor)
+    );
+
+    let dispatch = |body: &str| -> String {
+        states.iter().fold(String::new(), |mut acc, s| {
+            let _ = writeln!(acc, "            Self::{}(__s) => {body},", fsm_variant(s));
+            acc
+        })
+    };
+
+    if actor.init.is_some() {
+        let _ = write!(
+            out,
+            "    pub fn init(&mut self) {{\n        match self {{\n{}            Self::__Moving => {{}}\n        }}\n    }}\n\n",
+            dispatch("__s.init()")
+        );
+    }
+
+    let _ = write!(
+        out,
+        "    pub fn fire(&mut self) -> bool {{\n        let (__next, __fired) = match core::mem::replace(self, Self::__Moving) {{\n{}            Self::__Moving => unreachable!(),\n        }};\n        *self = __next;\n        __fired\n    }}\n",
+        dispatch("__s.step()")
+    );
+
+    for (name, port_ty) in port_types(actor) {
+        let field = port_field(&name);
+        let _ = write!(
+            out,
+            "\n    pub fn {field}_mut(&mut self) -> &mut {port_ty} {{\n        match self {{\n{}            Self::__Moving => unreachable!(),\n        }}\n    }}\n",
+            dispatch(&format!("&mut __s.{field}"))
+        );
+    }
+    out.push_str("}\n");
 
     out
 }
@@ -204,9 +431,10 @@ fn pattern_token_count(
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-enum Commit {
+enum Commit<'a> {
     Fired,
     Fallthrough,
+    Move(&'a str),
 }
 
 fn reads_tokens(expr: &Expr, tokens: &HashSet<String>) -> bool {
@@ -307,7 +535,7 @@ fn emit_action(
     action: &Action,
     state: &HashSet<String>,
     fsm_next: Option<&str>,
-    commit: Commit,
+    commit: Commit<'_>,
 ) -> String {
     let mut locals = HashSet::new();
     let mut tokens = HashSet::new();
@@ -325,8 +553,9 @@ fn emit_action(
 
     let body = emit_action_body(action, state, fsm_next, !consume);
     let tail = match commit {
-        Commit::Fired => "            return true;\n",
-        Commit::Fallthrough => "",
+        Commit::Fired => "            return true;\n".to_string(),
+        Commit::Fallthrough => String::new(),
+        Commit::Move(next) => format!("            return ({next}(self.into_state()), true);\n"),
     };
 
     let guard = if action.guards.is_empty() {

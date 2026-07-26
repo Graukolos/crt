@@ -9,6 +9,7 @@ use crate::codegen::{CodeGenerator, Program};
 
 pub struct Naive {
     pub cap: usize,
+    pub typestate: bool,
 }
 
 const PORTS_RS: &str = r"pub struct InPort<T> {
@@ -80,7 +81,7 @@ impl CodeGenerator for Naive {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap, orcc) {
+        for (name, source) in emit_files(program, self.cap, orcc, self.typestate) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -105,7 +106,12 @@ impl CodeGenerator for Naive {
     }
 }
 
-fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, String)> {
+fn emit_files(
+    program: &Program<'_>,
+    cap: usize,
+    orcc: bool,
+    typestate: bool,
+) -> Vec<(String, String)> {
     let mut files = Vec::new();
 
     let mut classes: Vec<&String> = program.actors.keys().collect();
@@ -117,7 +123,7 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
         src.push_str("#![allow(warnings)]\n");
         src.push_str("use std::collections::VecDeque;\n");
         src.push_str("use super::*;\n\n");
-        src.push_str(&emit_actor(actor));
+        src.push_str(&emit_actor(actor, typestate));
         files.push((format!("{}.rs", actor_mod(&actor.name)), src));
     }
 
@@ -135,14 +141,14 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
     main.push_str(PORTS_RS);
     main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
-    main.push_str(&emit_main(program, orcc));
+    main.push_str(&emit_main(program, orcc, typestate));
     files.push(("main.rs".to_string(), main));
 
     files
 }
 
-fn emit_main(program: &Program<'_>, orcc: bool) -> String {
-    let (instances, mut out) = emit_main_prelude(program, orcc, Channels::Local);
+fn emit_main(program: &Program<'_>, orcc: bool, typestate: bool) -> String {
+    let (instances, mut out) = emit_main_prelude(program, orcc, Channels::Local, typestate);
 
     out.push_str("    loop {\n");
     for inst in &instances {

@@ -4,14 +4,15 @@ use std::path::Path;
 
 use crate::ast::Actor;
 use crate::codegen::common::{
-    actor_mod, emit_actor, emit_shared_decls, ident, inst_var, instance_args, out_port_ctor,
-    port_field, rust_type, type_ident,
+    actor_mod, actor_port, actor_type, emit_actor, emit_shared_decls, ident, inst_var,
+    instance_args, out_port_ctor, rust_type,
 };
 use crate::codegen::{CodeGenerator, Program};
 use crate::network_ffi::ffi::Instance;
 
 pub struct Tokio {
     pub cap: usize,
+    pub typestate: bool,
 }
 
 impl CodeGenerator for Tokio {
@@ -21,7 +22,7 @@ impl CodeGenerator for Tokio {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap, orcc) {
+        for (name, source) in emit_files(program, self.cap, orcc, self.typestate) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -48,7 +49,12 @@ impl CodeGenerator for Tokio {
     }
 }
 
-fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, String)> {
+fn emit_files(
+    program: &Program<'_>,
+    cap: usize,
+    orcc: bool,
+    typestate: bool,
+) -> Vec<(String, String)> {
     let unbounded = cap == 0;
     let mut files = Vec::new();
 
@@ -61,9 +67,9 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
         src.push_str("#![allow(warnings)]\n");
         src.push_str("use std::collections::VecDeque;\n");
         src.push_str("use super::*;\n\n");
-        src.push_str(&emit_actor(actor));
+        src.push_str(&emit_actor(actor, typestate));
         src.push('\n');
-        src.push_str(&emit_task_run(actor));
+        src.push_str(&emit_task_run(actor, typestate));
         files.push((format!("{}.rs", actor_mod(&actor.name)), src));
     }
 
@@ -79,7 +85,7 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
     main.push_str(&emit_ports(unbounded));
     main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
-    main.push_str(&emit_main(program, unbounded));
+    main.push_str(&emit_main(program, unbounded, typestate));
     files.push(("main.rs".to_string(), main));
 
     files
@@ -179,16 +185,20 @@ impl<T: Clone> OutPort<T> {{
     )
 }
 
-fn emit_flush(actor: &Actor) -> String {
+fn emit_flush(actor: &Actor, typestate: bool) -> String {
     let mut out = String::new();
     for p in &actor.outports {
-        let _ = writeln!(out, "__actor.{}.flush().await;", port_field(&p.name));
+        let _ = writeln!(
+            out,
+            "{}.flush().await;",
+            actor_port(actor, typestate, "__actor", &p.name)
+        );
     }
     out
 }
 
-fn emit_task_run(actor: &Actor) -> String {
-    let ty = type_ident(&actor.name);
+fn emit_task_run(actor: &Actor, typestate: bool) -> String {
+    let ty = actor_type(actor, typestate);
     let run = format!("run_{}", ident(&actor.name));
 
     let mut params = vec![format!("mut __actor: {ty}")];
@@ -200,7 +210,7 @@ fn emit_task_run(actor: &Actor) -> String {
         ));
     }
     let sig = params.join(", ");
-    let flush = emit_flush(actor);
+    let flush = emit_flush(actor, typestate);
 
     let mut body = String::new();
     for p in &actor.inports {
@@ -230,8 +240,8 @@ fn emit_task_run(actor: &Actor) -> String {
             let id = ident(&p.name);
             let _ = writeln!(
                 body,
-                "__m = rx_{id}.recv(), if open_{id} => {{ match __m {{ Some(__c) => {{ __actor.{}.extend(__c); }} None => {{ open_{id} = false; }} }} }}",
-                port_field(&p.name)
+                "__m = rx_{id}.recv(), if open_{id} => {{ match __m {{ Some(__c) => {{ {}.extend(__c); }} None => {{ open_{id} = false; }} }} }}",
+                actor_port(actor, typestate, "__actor", &p.name)
             );
         }
         body.push_str("else => { break; }\n");
@@ -242,7 +252,7 @@ fn emit_task_run(actor: &Actor) -> String {
     format!("pub async fn {run}({sig}) {{\n{body}}}\n")
 }
 
-fn emit_main(program: &Program<'_>, unbounded: bool) -> String {
+fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String {
     let network = program.network;
     let instances: Vec<&Instance> = network
         .instances
@@ -301,7 +311,7 @@ fn emit_main(program: &Program<'_>, unbounded: bool) -> String {
             "    let {} = {}::{}::new({});",
             inst_var(&inst.id),
             actor_mod(&actor.name),
-            type_ident(&actor.name),
+            actor_type(actor, typestate),
             ctor_args.join(", ")
         );
     }

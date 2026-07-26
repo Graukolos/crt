@@ -29,6 +29,8 @@ struct Cli {
     cap: usize,
     #[arg(long)]
     orcc: bool,
+    #[arg(long)]
+    typestate: bool,
 }
 
 fn main() -> Result<()> {
@@ -95,7 +97,7 @@ fn main() -> Result<()> {
         }
     }
 
-    let generator = args.backend.generator(args.cap);
+    let generator = args.backend.generator(args.cap, args.typestate);
 
     let native_dir = args.native_dir.or_else(|| {
         let convention = args.source_dir.join("..").join("lib").join("native");

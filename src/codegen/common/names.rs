@@ -23,6 +23,10 @@ pub fn fsm_variant(state: &str) -> String {
     format!("St_{}", ident(state))
 }
 
+pub fn fsm_wrapper(name: &str) -> String {
+    format!("{}Fsm", type_ident(name))
+}
+
 pub fn inst_var(id: &str) -> String {
     format!("inst_{}", ident(id))
 }

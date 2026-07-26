@@ -26,12 +26,12 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub fn generator(self, cap: usize) -> Box<dyn CodeGenerator> {
+    pub fn generator(self, cap: usize, typestate: bool) -> Box<dyn CodeGenerator> {
         match self {
-            Backend::Naive => Box::new(naive::Naive { cap }),
-            Backend::Threads => Box::new(threads::Threads { cap }),
-            Backend::Tokio => Box::new(tokio::Tokio { cap }),
-            Backend::Rayon => Box::new(rayon::Rayon { cap }),
+            Backend::Naive => Box::new(naive::Naive { cap, typestate }),
+            Backend::Threads => Box::new(threads::Threads { cap, typestate }),
+            Backend::Tokio => Box::new(tokio::Tokio { cap, typestate }),
+            Backend::Rayon => Box::new(rayon::Rayon { cap, typestate }),
         }
     }
 }
