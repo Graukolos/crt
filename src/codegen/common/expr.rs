@@ -124,7 +124,7 @@ pub fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>)
         Stmt::InputRead {
             port, identifier, ..
         } => format!(
-            "            let {} = {}.pop_front().unwrap();\n",
+            "            let {} = {}.recv();\n",
             ident(identifier),
             port_ref(port)
         ),

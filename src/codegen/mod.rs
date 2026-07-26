@@ -26,9 +26,9 @@ pub enum Backend {
 impl Backend {
     pub fn generator(self, cap: usize) -> Box<dyn CodeGenerator> {
         match self {
-            Backend::Naive => Box::new(naive::Naive),
+            Backend::Naive => Box::new(naive::Naive { cap }),
             Backend::Tokio => Box::new(tokio::Tokio { cap }),
-            Backend::Rayon => Box::new(rayon::Rayon),
+            Backend::Rayon => Box::new(rayon::Rayon { cap }),
         }
     }
 }

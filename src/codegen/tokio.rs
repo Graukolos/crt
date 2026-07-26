@@ -4,8 +4,8 @@ use std::path::Path;
 
 use crate::ast::Actor;
 use crate::codegen::common::{
-    actor_mod, emit_actor, emit_shared_decls, ident, inst_var, instance_args, port_ref, rust_type,
-    type_ident,
+    actor_mod, emit_actor, emit_shared_decls, ident, inst_var, instance_args, out_port_ctor,
+    port_field, rust_type, type_ident,
 };
 use crate::codegen::{CodeGenerator, Program};
 use crate::network_ffi::ffi::Instance;
@@ -60,28 +60,24 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
         let mut src = String::new();
         src.push_str("#![allow(warnings)]\n");
         src.push_str("use std::collections::VecDeque;\n");
-        if unbounded {
-            src.push_str("use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};\n");
-        } else {
-            src.push_str("use tokio::sync::mpsc::{Receiver, Sender};\n");
-        }
         src.push_str("use super::*;\n\n");
         src.push_str(&emit_actor(actor));
         src.push('\n');
-        src.push_str(&emit_task_run(actor, unbounded));
+        src.push_str(&emit_task_run(actor));
         files.push((format!("{}.rs", actor_mod(&actor.name)), src));
     }
 
     let mut main = String::new();
-    main.push_str("#![allow(warnings)]\n\n");
+    main.push_str("#![allow(warnings)]\n");
+    main.push_str("use std::collections::VecDeque;\n\n");
     for class in &classes {
         let actor = &program.actors[*class];
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    if !unbounded {
-        let _ = writeln!(main, "const CAP: usize = {cap};\n");
-    }
+    let _ = writeln!(main, "const CAP: usize = {cap};\n");
+    main.push_str(&emit_ports(unbounded));
+    main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
     main.push_str(&emit_main(program, unbounded));
     files.push(("main.rs".to_string(), main));
@@ -89,83 +85,138 @@ fn emit_files(program: &Program<'_>, cap: usize, orcc: bool) -> Vec<(String, Str
     files
 }
 
-fn fire_args(actor: &Actor) -> String {
-    actor
-        .inports
-        .iter()
-        .chain(&actor.outports)
-        .map(|p| format!("&mut {}", port_ref(&p.name)))
-        .collect::<Vec<_>>()
-        .join(", ")
+fn emit_ports(unbounded: bool) -> String {
+    let (tx_ty, rx_ty, send_await) = if unbounded {
+        (
+            "tokio::sync::mpsc::UnboundedSender",
+            "tokio::sync::mpsc::UnboundedReceiver",
+            "",
+        )
+    } else {
+        (
+            "tokio::sync::mpsc::Sender",
+            "tokio::sync::mpsc::Receiver",
+            ".await",
+        )
+    };
+    format!(
+        r"pub type Tx<T> = {tx_ty}<Vec<T>>;
+pub type Rx<T> = {rx_ty}<Vec<T>>;
+
+pub struct InPort<T> {{
+    buf: VecDeque<T>,
+}}
+
+impl<T: Clone> InPort<T> {{
+    pub fn new() -> Self {{
+        Self {{ buf: VecDeque::new() }}
+    }}
+    pub fn avail(&mut self, n: usize) -> bool {{
+        self.buf.len() >= n
+    }}
+    pub fn peek(&self, i: usize) -> T {{
+        self.buf[i].clone()
+    }}
+    pub fn recv(&mut self) -> T {{
+        self.buf.pop_front().unwrap()
+    }}
+    pub fn pop_front(&mut self) -> Option<T> {{
+        self.buf.pop_front()
+    }}
+    pub fn extend(&mut self, chunk: Vec<T>) {{
+        self.buf.extend(chunk);
+    }}
+}}
+
+pub enum Txs<T> {{
+    None,
+    One(Tx<T>),
+    Many(Vec<Tx<T>>),
+}}
+
+pub struct OutPort<T> {{
+    txs: Txs<T>,
+    buf: VecDeque<T>,
+}}
+
+impl<T: Clone> OutPort<T> {{
+    pub fn none() -> Self {{
+        Self {{ txs: Txs::None, buf: VecDeque::new() }}
+    }}
+    pub fn one(tx: Tx<T>) -> Self {{
+        Self {{ txs: Txs::One(tx), buf: VecDeque::new() }}
+    }}
+    pub fn many(txs: Vec<Tx<T>>) -> Self {{
+        Self {{ txs: Txs::Many(txs), buf: VecDeque::new() }}
+    }}
+    pub fn has_room(&mut self) -> bool {{
+        CAP == 0 || self.buf.len() < CAP
+    }}
+    pub fn push_back(&mut self, value: T) {{
+        self.buf.push_back(value);
+    }}
+    pub async fn flush(&mut self) {{
+        if self.buf.is_empty() {{
+            return;
+        }}
+        let mut chunk: Vec<T> = self.buf.drain(..).collect();
+        let targets: &[Tx<T>] = match &self.txs {{
+            Txs::None => &[],
+            Txs::One(tx) => core::slice::from_ref(tx),
+            Txs::Many(txs) => txs,
+        }};
+        for (i, tx) in targets.iter().enumerate() {{
+            let payload = if i + 1 == targets.len() {{
+                core::mem::take(&mut chunk)
+            }} else {{
+                chunk.clone()
+            }};
+            let _ = tx.send(payload){send_await};
+        }}
+    }}
+}}
+"
+    )
 }
 
-fn emit_flush(actor: &Actor, unbounded: bool) -> String {
-    let send_await = if unbounded { "" } else { ".await" };
+fn emit_flush(actor: &Actor) -> String {
     let mut out = String::new();
     for p in &actor.outports {
-        let buf = port_ref(&p.name);
-        let id = ident(&p.name);
-        let _ = writeln!(
-            out,
-            "if !{buf}.is_empty() {{ \
-             let __chunk: Vec<_> = {buf}.drain(..).collect(); \
-             for __tx in &tx_{id} {{ let _ = __tx.send(__chunk.clone()){send_await}; }} }}"
-        );
+        let _ = writeln!(out, "__actor.{}.flush().await;", port_field(&p.name));
     }
     out
 }
 
-fn emit_task_run(actor: &Actor, unbounded: bool) -> String {
-    let (rx_ty, tx_ty) = if unbounded {
-        ("UnboundedReceiver", "UnboundedSender")
-    } else {
-        ("Receiver", "Sender")
-    };
+fn emit_task_run(actor: &Actor) -> String {
     let ty = type_ident(&actor.name);
     let run = format!("run_{}", ident(&actor.name));
 
     let mut params = vec![format!("mut __actor: {ty}")];
     for p in &actor.inports {
         params.push(format!(
-            "mut rx_{}: {rx_ty}<Vec<{}>>",
-            ident(&p.name),
-            rust_type(&p.typ)
-        ));
-    }
-    for p in &actor.outports {
-        params.push(format!(
-            "tx_{}: Vec<{tx_ty}<Vec<{}>>>",
+            "mut rx_{}: Rx<{}>",
             ident(&p.name),
             rust_type(&p.typ)
         ));
     }
     let sig = params.join(", ");
-    let args = fire_args(actor);
-    let flush = emit_flush(actor, unbounded);
+    let flush = emit_flush(actor);
 
     let mut body = String::new();
-    for p in actor.inports.iter().chain(&actor.outports) {
-        let _ = writeln!(
-            body,
-            "let mut {}: VecDeque<{}> = VecDeque::new();",
-            port_ref(&p.name),
-            rust_type(&p.typ)
-        );
-    }
     for p in &actor.inports {
         let _ = writeln!(body, "let mut open_{} = true;", ident(&p.name));
     }
 
     if actor.init.is_some() {
-        let _ = writeln!(body, "__actor.init({args});");
+        body.push_str("__actor.init();\n");
         body.push_str(&flush);
     }
 
     if actor.inports.is_empty() {
-        let _ = writeln!(body, "while __actor.fire({args}) {{\n{flush}}}");
+        let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
     } else {
         body.push_str("loop {\n");
-        let _ = writeln!(body, "while __actor.fire({args}) {{\n{flush}}}");
+        let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
         let all_closed = actor
             .inports
             .iter()
@@ -179,8 +230,8 @@ fn emit_task_run(actor: &Actor, unbounded: bool) -> String {
             let id = ident(&p.name);
             let _ = writeln!(
                 body,
-                "__m = rx_{id}.recv(), if open_{id} => {{ match __m {{ Some(__c) => {{ {}.extend(__c); }} None => {{ open_{id} = false; }} }} }}",
-                port_ref(&p.name)
+                "__m = rx_{id}.recv(), if open_{id} => {{ match __m {{ Some(__c) => {{ __actor.{}.extend(__c); }} None => {{ open_{id} = false; }} }} }}",
+                port_field(&p.name)
             );
         }
         body.push_str("else => { break; }\n");
@@ -231,13 +282,27 @@ fn emit_main(program: &Program<'_>, unbounded: bool) -> String {
 
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
-        let ctor_args = instance_args(inst, actor);
+        let mut ctor_args = vec![instance_args(inst, actor)];
+        ctor_args.retain(|a| !a.is_empty());
+        for _ in &actor.inports {
+            ctor_args.push("InPort::new()".to_string());
+        }
+        for p in &actor.outports {
+            let clones: Vec<String> = network
+                .edges
+                .iter()
+                .filter(|e| e.src_id == inst.id && e.src_port == p.name)
+                .map(|e| format!("tx_{}_{}.clone()", ident(&e.dst_id), ident(&e.dst_port)))
+                .collect();
+            ctor_args.push(out_port_ctor(&clones));
+        }
         let _ = writeln!(
             out,
-            "    let {} = {}::{}::new({ctor_args});",
+            "    let {} = {}::{}::new({});",
             inst_var(&inst.id),
             actor_mod(&actor.name),
-            type_ident(&actor.name)
+            type_ident(&actor.name),
+            ctor_args.join(", ")
         );
     }
 
@@ -247,15 +312,6 @@ fn emit_main(program: &Program<'_>, unbounded: bool) -> String {
         let mut args = vec![inst_var(&inst.id)];
         for p in &actor.inports {
             args.push(format!("rx_{}_{}", ident(&inst.id), ident(&p.name)));
-        }
-        for p in &actor.outports {
-            let clones: Vec<String> = network
-                .edges
-                .iter()
-                .filter(|e| e.src_id == inst.id && e.src_port == p.name)
-                .map(|e| format!("tx_{}_{}.clone()", ident(&e.dst_id), ident(&e.dst_port)))
-                .collect();
-            args.push(format!("vec![{}]", clones.join(", ")));
         }
         let _ = writeln!(
             out,

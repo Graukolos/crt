@@ -6,9 +6,15 @@ use crate::codegen::Program;
 use crate::network_ffi::ffi::Instance;
 
 use super::{
-    actor_mod, default_value, emit_const, emit_expr, emit_function, emit_natives, emit_procedure,
-    fifo_in, fifo_out, inst_var, param_value, rust_type, type_ident,
+    actor_mod, chan_rx, chan_tx, chan_var, default_value, emit_const, emit_expr, emit_function,
+    emit_natives, emit_procedure, inst_var, out_port_ctor, param_value, rust_type, type_ident,
 };
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Channels {
+    Local,
+    Crossbeam,
+}
 
 pub fn emit_shared_decls(program: &Program<'_>, orcc: bool) -> String {
     let mut out = String::new();
@@ -81,7 +87,11 @@ pub fn instance_args(inst: &Instance, actor: &Actor) -> String {
         .join(", ")
 }
 
-pub fn emit_main_prelude<'a>(program: &Program<'a>, orcc: bool) -> (Vec<&'a Instance>, String) {
+pub fn emit_main_prelude<'a>(
+    program: &Program<'a>,
+    orcc: bool,
+    channels: Channels,
+) -> (Vec<&'a Instance>, String) {
     let network = program.network;
     let instances: Vec<&Instance> = network
         .instances
@@ -95,87 +105,99 @@ pub fn emit_main_prelude<'a>(program: &Program<'a>, orcc: bool) -> (Vec<&'a Inst
         out.push_str(crate::codegen::orcc::MAIN_SETUP);
     }
 
-    for inst in &instances {
-        let actor = &program.actors[&inst.class_name];
-        for port in &actor.inports {
-            let _ = writeln!(
-                out,
-                "    let mut {}: VecDeque<{}> = VecDeque::new();",
-                fifo_in(&inst.id, &port.name),
-                rust_type(&port.typ)
-            );
-        }
-        for port in &actor.outports {
-            let _ = writeln!(
-                out,
-                "    let mut {}: VecDeque<{}> = VecDeque::new();",
-                fifo_out(&inst.id, &port.name),
-                rust_type(&port.typ)
-            );
-        }
-    }
+    out.push_str(&emit_channels(program, &instances, channels));
 
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
-        let args = instance_args(inst, actor);
+        let mut args = vec![instance_args(inst, actor)];
+        args.retain(|a| !a.is_empty());
+        args.push(port_args(program, &instances, inst, actor, channels));
         let _ = writeln!(
             out,
-            "    let mut {} = {}::{}::new({args});",
+            "    let mut {} = {}::{}::new({});",
             inst_var(&inst.id),
             actor_mod(&actor.name),
-            type_ident(&actor.name)
+            type_ident(&actor.name),
+            args.join(", ")
         );
     }
 
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
         if actor.init.is_some() {
-            let _ = writeln!(
-                out,
-                "    {}.init({});",
-                inst_var(&inst.id),
-                fire_args(inst, actor)
-            );
+            let _ = writeln!(out, "    {}.init();", inst_var(&inst.id));
         }
     }
 
     (instances, out)
 }
 
-pub fn fire_args(inst: &Instance, actor: &Actor) -> String {
-    let mut parts = Vec::new();
-    for port in &actor.inports {
-        parts.push(format!("&mut {}", fifo_in(&inst.id, &port.name)));
+fn emit_channels(program: &Program<'_>, instances: &[&Instance], channels: Channels) -> String {
+    let mut out = String::new();
+    for inst in instances {
+        let actor = &program.actors[&inst.class_name];
+        for port in &actor.inports {
+            let ty = rust_type(&port.typ);
+            match channels {
+                Channels::Local => {
+                    let _ = writeln!(
+                        out,
+                        "    let {} = Rc::new(RefCell::new(VecDeque::<{ty}>::new()));",
+                        chan_var(&inst.id, &port.name)
+                    );
+                }
+                Channels::Crossbeam => {
+                    let _ = writeln!(
+                        out,
+                        "    let ({}, {}) = if CAP == 0 {{ crossbeam_channel::unbounded::<{ty}>() }} else {{ crossbeam_channel::bounded::<{ty}>(CAP) }};",
+                        chan_tx(&inst.id, &port.name),
+                        chan_rx(&inst.id, &port.name)
+                    );
+                }
+            }
+        }
     }
-    for port in &actor.outports {
-        parts.push(format!("&mut {}", fifo_out(&inst.id, &port.name)));
-    }
-    parts.join(", ")
+    out
 }
 
-pub fn distribute(program: &Program<'_>, inst: &Instance, actor: &Actor) -> String {
-    let mut out = String::new();
+fn port_args(
+    program: &Program<'_>,
+    instances: &[&Instance],
+    inst: &Instance,
+    actor: &Actor,
+    channels: Channels,
+) -> String {
+    let known: HashSet<(&str, &str)> = instances
+        .iter()
+        .flat_map(|i| {
+            program.actors[&i.class_name]
+                .inports
+                .iter()
+                .map(move |port| (i.id.as_str(), port.name.as_str()))
+        })
+        .collect();
+
+    let mut args = Vec::new();
+    for port in &actor.inports {
+        let source = match channels {
+            Channels::Local => format!("{}.clone()", chan_var(&inst.id, &port.name)),
+            Channels::Crossbeam => chan_rx(&inst.id, &port.name),
+        };
+        args.push(format!("InPort::new({source})"));
+    }
     for port in &actor.outports {
         let targets: Vec<String> = program
             .network
             .edges
             .iter()
             .filter(|e| e.src_id == inst.id && e.src_port == port.name)
-            .map(|e| fifo_in(&e.dst_id, &e.dst_port))
+            .filter(|e| known.contains(&(e.dst_id.as_str(), e.dst_port.as_str())))
+            .map(|e| match channels {
+                Channels::Local => format!("{}.clone()", chan_var(&e.dst_id, &e.dst_port)),
+                Channels::Crossbeam => format!("{}.clone()", chan_tx(&e.dst_id, &e.dst_port)),
+            })
             .collect();
-        let staging = fifo_out(&inst.id, &port.name);
-        if targets.is_empty() {
-            let _ = writeln!(out, "            {staging}.clear();");
-        } else {
-            let _ = writeln!(
-                out,
-                "            while let Some(token) = {staging}.pop_front() {{"
-            );
-            for target in &targets {
-                let _ = writeln!(out, "                {target}.push_back(token);");
-            }
-            out.push_str("            }\n");
-        }
+        args.push(out_port_ctor(&targets));
     }
-    out
+    args.join(", ")
 }

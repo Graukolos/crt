@@ -27,18 +27,34 @@ pub fn inst_var(id: &str) -> String {
     format!("inst_{}", ident(id))
 }
 
-pub fn port_ref(name: &str) -> String {
+pub fn port_field(name: &str) -> String {
     format!("port_{}", ident(name))
 }
 
-pub fn fifo_in(id: &str, port: &str) -> String {
-    format!("fin_{}_{}", ident(id), ident(port))
+pub fn port_ref(name: &str) -> String {
+    format!("self.{}", port_field(name))
 }
 
-pub fn fifo_out(id: &str, port: &str) -> String {
-    format!("fout_{}_{}", ident(id), ident(port))
+pub fn chan_var(id: &str, port: &str) -> String {
+    format!("ch_{}_{}", ident(id), ident(port))
+}
+
+pub fn chan_tx(id: &str, port: &str) -> String {
+    format!("tx_{}_{}", ident(id), ident(port))
+}
+
+pub fn chan_rx(id: &str, port: &str) -> String {
+    format!("rx_{}_{}", ident(id), ident(port))
 }
 
 pub fn actor_mod(name: &str) -> String {
     format!("m_{}", ident(name))
+}
+
+pub fn out_port_ctor(targets: &[String]) -> String {
+    match targets {
+        [] => "OutPort::none()".to_string(),
+        [target] => format!("OutPort::one({target})"),
+        _ => format!("OutPort::many(vec![{}])", targets.join(", ")),
+    }
 }
