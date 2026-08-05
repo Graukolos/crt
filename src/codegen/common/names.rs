@@ -51,6 +51,10 @@ pub fn chan_rx(id: &str, port: &str) -> String {
     format!("rx_{}_{}", ident(id), ident(port))
 }
 
+pub fn chan_credit(id: &str, port: &str) -> String {
+    format!("credit_{}_{}", ident(id), ident(port))
+}
+
 pub fn actor_mod(name: &str) -> String {
     format!("m_{}", ident(name))
 }

@@ -6,11 +6,10 @@ use crate::codegen::common::{
     CROSSBEAM_PORTS, Channels, actor_mod, actor_port, emit_actor, emit_main_prelude,
     emit_shared_decls, inst_var,
 };
-use crate::codegen::{CodeGenerator, Program};
+use crate::codegen::{CodeGenerator, Options, Program};
 
 pub struct Rayon {
-    pub cap: usize,
-    pub typestate: bool,
+    pub options: Options,
 }
 
 impl CodeGenerator for Rayon {
@@ -20,7 +19,7 @@ impl CodeGenerator for Rayon {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap, orcc, self.typestate) {
+        for (name, source) in emit_files(program, self.options, orcc) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -45,16 +44,11 @@ impl CodeGenerator for Rayon {
     }
 }
 
-fn emit_files(
-    program: &Program<'_>,
-    cap: usize,
-    orcc: bool,
-    typestate: bool,
-) -> Vec<(String, String)> {
+fn emit_files(program: &Program<'_>, options: Options, orcc: bool) -> Vec<(String, String)> {
+    let typestate = options.typestate;
     let mut files = Vec::new();
 
-    let mut classes: Vec<&String> = program.actors.keys().collect();
-    classes.sort();
+    let classes: Vec<&String> = program.actors.keys().collect();
 
     for class in &classes {
         let actor = &program.actors[*class];
@@ -74,8 +68,12 @@ fn emit_files(
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    let _ = writeln!(main, "const CAP: usize = {cap};");
-    main.push_str("const ROUND_BUDGET: usize = 1024;\n\n");
+    let _ = writeln!(main, "const CAP: usize = {};", options.cap);
+    let _ = writeln!(
+        main,
+        "const FIRE_BUDGET: usize = {};\n",
+        options.fire_budget_literal()
+    );
     main.push_str(CROSSBEAM_PORTS);
     main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
@@ -102,7 +100,7 @@ fn emit_main(program: &Program<'_>, orcc: bool, typestate: bool) -> String {
         }
         let _ = writeln!(
             out,
-            "            s.spawn(|_| {{ let mut __n = 0usize; while __n < ROUND_BUDGET && {}.fire() {{ __n += 1; }}{pumps} }});",
+            "            s.spawn(|_| {{ let mut __n = 0usize; while __n < FIRE_BUDGET && {}.fire() {{ __n += 1; }}{pumps} }});",
             inst_var(&inst.id)
         );
     }

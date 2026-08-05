@@ -4,15 +4,14 @@ use std::path::Path;
 
 use crate::ast::Actor;
 use crate::codegen::common::{
-    actor_mod, actor_port, actor_type, emit_actor, emit_shared_decls, ident, inst_var,
-    instance_args, out_port_ctor, rust_type,
+    actor_mod, actor_port, actor_type, chan_credit, chan_rx, chan_tx, emit_actor,
+    emit_shared_decls, ident, inst_var, instance_args, out_port_ctor, rust_type,
 };
-use crate::codegen::{CodeGenerator, Program};
+use crate::codegen::{CodeGenerator, Options, Program};
 use crate::network_ffi::ffi::Instance;
 
 pub struct Tokio {
-    pub cap: usize,
-    pub typestate: bool,
+    pub options: Options,
 }
 
 impl CodeGenerator for Tokio {
@@ -22,7 +21,7 @@ impl CodeGenerator for Tokio {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap, orcc, self.typestate) {
+        for (name, source) in emit_files(program, self.options, orcc) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -49,17 +48,12 @@ impl CodeGenerator for Tokio {
     }
 }
 
-fn emit_files(
-    program: &Program<'_>,
-    cap: usize,
-    orcc: bool,
-    typestate: bool,
-) -> Vec<(String, String)> {
-    let unbounded = cap == 0;
+fn emit_files(program: &Program<'_>, options: Options, orcc: bool) -> Vec<(String, String)> {
+    let typestate = options.typestate;
+    let unbounded = options.cap == 0;
     let mut files = Vec::new();
 
-    let mut classes: Vec<&String> = program.actors.keys().collect();
-    classes.sort();
+    let classes: Vec<&String> = program.actors.keys().collect();
 
     for class in &classes {
         let actor = &program.actors[*class];
@@ -81,11 +75,11 @@ fn emit_files(
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    let _ = writeln!(main, "const CAP: usize = {cap};\n");
+    let _ = writeln!(main, "const CAP: usize = {};\n", options.cap);
     main.push_str(&emit_ports(unbounded));
     main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));
-    main.push_str(&emit_main(program, unbounded, typestate));
+    main.push_str(&emit_main(program, unbounded, orcc, typestate));
     files.push(("main.rs".to_string(), main));
 
     files
@@ -108,55 +102,88 @@ fn emit_ports(unbounded: bool) -> String {
     format!(
         r"pub type Tx<T> = {tx_ty}<Vec<T>>;
 pub type Rx<T> = {rx_ty}<Vec<T>>;
+pub type Credit = std::sync::Arc<std::sync::atomic::AtomicUsize>;
 
-pub struct InPort<T> {{
+const CREDIT_ORDER: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
+
+pub fn credit() -> Credit {{
+    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0))
+}}
+
+{IN_PORT}{}",
+        emit_out_port(send_await)
+    )
+}
+
+const IN_PORT: &str = r"pub struct InPort<T> {
     buf: VecDeque<T>,
-}}
+    credit: Credit,
+}
 
-impl<T: Clone> InPort<T> {{
-    pub fn new() -> Self {{
-        Self {{ buf: VecDeque::new() }}
-    }}
-    pub fn avail(&mut self, n: usize) -> bool {{
+impl<T: Clone> InPort<T> {
+    pub fn new(credit: Credit) -> Self {
+        Self { buf: VecDeque::new(), credit }
+    }
+    pub fn avail(&mut self, n: usize) -> bool {
         self.buf.len() >= n
-    }}
-    pub fn peek(&self, i: usize) -> T {{
+    }
+    pub fn peek(&self, i: usize) -> T {
         self.buf[i].clone()
-    }}
-    pub fn recv(&mut self) -> T {{
-        self.buf.pop_front().unwrap()
-    }}
-    pub fn pop_front(&mut self) -> Option<T> {{
-        self.buf.pop_front()
-    }}
-    pub fn extend(&mut self, chunk: Vec<T>) {{
+    }
+    pub fn recv(&mut self) -> T {
+        let value = self.buf.pop_front().unwrap();
+        self.credit.fetch_sub(1, CREDIT_ORDER);
+        value
+    }
+    pub fn pop_front(&mut self) -> Option<T> {
+        let value = self.buf.pop_front();
+        if value.is_some() {
+            self.credit.fetch_sub(1, CREDIT_ORDER);
+        }
+        value
+    }
+    pub fn extend(&mut self, chunk: Vec<T>) {
         self.buf.extend(chunk);
-    }}
-}}
+    }
+}
 
-pub enum Txs<T> {{
+pub enum Txs<T> {
     None,
-    One(Tx<T>),
-    Many(Vec<Tx<T>>),
-}}
+    One(Tx<T>, Credit),
+    Many(Vec<(Tx<T>, Credit)>),
+}
 
-pub struct OutPort<T> {{
+pub struct OutPort<T> {
     txs: Txs<T>,
     buf: VecDeque<T>,
-}}
+}
+";
 
+fn emit_out_port(send_await: &str) -> String {
+    format!(
+        r"
 impl<T: Clone> OutPort<T> {{
     pub fn none() -> Self {{
         Self {{ txs: Txs::None, buf: VecDeque::new() }}
     }}
-    pub fn one(tx: Tx<T>) -> Self {{
-        Self {{ txs: Txs::One(tx), buf: VecDeque::new() }}
+    pub fn one(target: (Tx<T>, Credit)) -> Self {{
+        Self {{ txs: Txs::One(target.0, target.1), buf: VecDeque::new() }}
     }}
-    pub fn many(txs: Vec<Tx<T>>) -> Self {{
-        Self {{ txs: Txs::Many(txs), buf: VecDeque::new() }}
+    pub fn many(targets: Vec<(Tx<T>, Credit)>) -> Self {{
+        Self {{ txs: Txs::Many(targets), buf: VecDeque::new() }}
     }}
     pub fn has_room(&mut self) -> bool {{
-        CAP == 0 || self.buf.len() < CAP
+        if CAP == 0 {{
+            return true;
+        }}
+        let pending = self.buf.len();
+        match &self.txs {{
+            Txs::None => true,
+            Txs::One(_, credit) => credit.load(CREDIT_ORDER) + pending < CAP,
+            Txs::Many(targets) => targets
+                .iter()
+                .all(|(_, credit)| credit.load(CREDIT_ORDER) + pending < CAP),
+        }}
     }}
     pub fn push_back(&mut self, value: T) {{
         self.buf.push_back(value);
@@ -166,18 +193,24 @@ impl<T: Clone> OutPort<T> {{
             return;
         }}
         let mut chunk: Vec<T> = self.buf.drain(..).collect();
-        let targets: &[Tx<T>] = match &self.txs {{
-            Txs::None => &[],
-            Txs::One(tx) => core::slice::from_ref(tx),
-            Txs::Many(txs) => txs,
-        }};
-        for (i, tx) in targets.iter().enumerate() {{
-            let payload = if i + 1 == targets.len() {{
-                core::mem::take(&mut chunk)
-            }} else {{
-                chunk.clone()
-            }};
-            let _ = tx.send(payload){send_await};
+        let tokens = chunk.len();
+        match &self.txs {{
+            Txs::None => {{}}
+            Txs::One(tx, credit) => {{
+                credit.fetch_add(tokens, CREDIT_ORDER);
+                let _ = tx.send(chunk){send_await};
+            }}
+            Txs::Many(targets) => {{
+                for (i, (tx, credit)) in targets.iter().enumerate() {{
+                    let payload = if i + 1 == targets.len() {{
+                        core::mem::take(&mut chunk)
+                    }} else {{
+                        chunk.clone()
+                    }};
+                    credit.fetch_add(tokens, CREDIT_ORDER);
+                    let _ = tx.send(payload){send_await};
+                }}
+            }}
         }}
     }}
 }}
@@ -195,6 +228,25 @@ fn emit_flush(actor: &Actor, typestate: bool) -> String {
         );
     }
     out
+}
+
+fn emit_room_probe(actor: &Actor, typestate: bool) -> Option<String> {
+    if actor.outports.is_empty() {
+        return None;
+    }
+    Some(
+        actor
+            .outports
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}.has_room()",
+                    actor_port(actor, typestate, "__actor", &p.name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" && "),
+    )
 }
 
 fn emit_task_run(actor: &Actor, typestate: bool) -> String {
@@ -222,8 +274,22 @@ fn emit_task_run(actor: &Actor, typestate: bool) -> String {
         body.push_str(&flush);
     }
 
+    let room = emit_room_probe(actor, typestate);
+    let await_room = room.as_ref().map_or_else(String::new, |expr| {
+        format!(
+            "if !({expr}) {{ tokio::task::yield_now().await; continue; }}\nif __actor.fire() {{\n{flush}continue;\n}}\n"
+        )
+    });
+
     if actor.inports.is_empty() {
-        let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
+        if room.is_none() {
+            let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
+        } else {
+            body.push_str("loop {\n");
+            let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
+            body.push_str(&await_room);
+            body.push_str("break;\n}\n");
+        }
     } else {
         body.push_str("loop {\n");
         let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
@@ -234,6 +300,7 @@ fn emit_task_run(actor: &Actor, typestate: bool) -> String {
             .collect::<Vec<_>>()
             .join(" && ");
         let _ = writeln!(body, "if {all_closed} {{ break; }}");
+        body.push_str(&await_room);
         body.push_str("tokio::select! {\n");
         body.push_str("biased;\n");
         for p in &actor.inports {
@@ -252,7 +319,7 @@ fn emit_task_run(actor: &Actor, typestate: bool) -> String {
     format!("pub async fn {run}({sig}) {{\n{body}}}\n")
 }
 
-fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String {
+fn emit_main(program: &Program<'_>, unbounded: bool, orcc: bool, typestate: bool) -> String {
     let network = program.network;
     let instances: Vec<&Instance> = network
         .instances
@@ -263,7 +330,7 @@ fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String 
     let mut out = String::new();
     out.push_str("#[tokio::main]\nasync fn main() {\n");
 
-    if program.has_natives() {
+    if orcc {
         out.push_str(super::orcc::MAIN_SETUP);
     }
 
@@ -283,9 +350,14 @@ fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String 
             };
             let _ = writeln!(
                 out,
-                "    let (tx_{0}_{1}, rx_{0}_{1}) = {ctor};",
-                ident(&inst.id),
-                ident(&p.name),
+                "    let ({}, {}) = {ctor};",
+                chan_tx(&inst.id, &p.name),
+                chan_rx(&inst.id, &p.name),
+            );
+            let _ = writeln!(
+                out,
+                "    let {} = credit();",
+                chan_credit(&inst.id, &p.name)
             );
         }
     }
@@ -294,15 +366,24 @@ fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String 
         let actor = &program.actors[&inst.class_name];
         let mut ctor_args = vec![instance_args(inst, actor)];
         ctor_args.retain(|a| !a.is_empty());
-        for _ in &actor.inports {
-            ctor_args.push("InPort::new()".to_string());
+        for p in &actor.inports {
+            ctor_args.push(format!(
+                "InPort::new({}.clone())",
+                chan_credit(&inst.id, &p.name)
+            ));
         }
         for p in &actor.outports {
             let clones: Vec<String> = network
                 .edges
                 .iter()
                 .filter(|e| e.src_id == inst.id && e.src_port == p.name)
-                .map(|e| format!("tx_{}_{}.clone()", ident(&e.dst_id), ident(&e.dst_port)))
+                .map(|e| {
+                    format!(
+                        "({}.clone(), {}.clone())",
+                        chan_tx(&e.dst_id, &e.dst_port),
+                        chan_credit(&e.dst_id, &e.dst_port)
+                    )
+                })
                 .collect();
             ctor_args.push(out_port_ctor(&clones));
         }
@@ -321,7 +402,7 @@ fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String 
         let actor = &program.actors[&inst.class_name];
         let mut args = vec![inst_var(&inst.id)];
         for p in &actor.inports {
-            args.push(format!("rx_{}_{}", ident(&inst.id), ident(&p.name)));
+            args.push(chan_rx(&inst.id, &p.name));
         }
         let _ = writeln!(
             out,
@@ -335,7 +416,7 @@ fn emit_main(program: &Program<'_>, unbounded: bool, typestate: bool) -> String 
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
         for p in &actor.inports {
-            let _ = writeln!(out, "    drop(tx_{}_{});", ident(&inst.id), ident(&p.name));
+            let _ = writeln!(out, "    drop({});", chan_tx(&inst.id, &p.name));
         }
     }
 

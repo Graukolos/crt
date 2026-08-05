@@ -6,7 +6,7 @@ mod convert;
 mod ffi;
 mod network_ffi;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -27,6 +27,8 @@ struct Cli {
     native_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 1024)]
     cap: usize,
+    #[arg(long, default_value_t = 1024)]
+    fire_budget: usize,
     #[arg(long)]
     orcc: bool,
     #[arg(long)]
@@ -49,9 +51,9 @@ fn main() -> Result<()> {
         }
     };
 
-    let mut actors = HashMap::new();
+    let mut actors = BTreeMap::new();
     let mut units = Vec::new();
-    let mut import_paths: HashSet<String> = HashSet::new();
+    let mut import_paths: BTreeSet<String> = BTreeSet::new();
     for class in &network.class_paths {
         let code = std::fs::read_to_string(&class.path)?;
         let raw = match ffi::ffi::parse_cal(&code) {
@@ -97,7 +99,11 @@ fn main() -> Result<()> {
         }
     }
 
-    let generator = args.backend.generator(args.cap, args.typestate);
+    let generator = args.backend.generator(codegen::Options {
+        cap: args.cap,
+        fire_budget: args.fire_budget,
+        typestate: args.typestate,
+    });
 
     let native_dir = args.native_dir.or_else(|| {
         let convention = args.source_dir.join("..").join("lib").join("native");
@@ -173,5 +179,6 @@ fn discover_native_sources(dir: &std::path::Path) -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     walk(dir, &mut out);
+    out.sort();
     out
 }

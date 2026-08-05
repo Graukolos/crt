@@ -1,35 +1,72 @@
 #!/bin/bash
 
-set -e
+source "$(dirname "$0")/common.sh"
 
-XDF=ZigBee/src/multitoken_tx/Top_ZigBee_tx.xdf
-SRC=ZigBee/src
+XDF=custom-networks/ZigBee/src/multitoken_tx/Top_ZigBee_tx.xdf
+SRC=custom-networks/ZigBee/src
+NATIVE=custom-networks/ZigBee/lib/native/linux.c
+INPUT=custom-networks/ZigBee/lib/input_signals/tx_stream.in
+REFERENCE=custom-networks/ZigBee/lib/reference_output/tx_stream.out
 BIN=top_zigbee_tx
+WORK=/tmp/crt-zigbee
+REPEAT=${ZIGBEE_REPEAT:-100}
 
-rm -rf /tmp/zigbee
-mkdir -p /tmp/zigbee/cpp
-N=100
-for _ in $(seq $N); do cat ZigBee/lib/input_signals/tx_stream.in; done > /tmp/zigbee/big.in
+normalize() {
+	sed 's/^[[:space:]]*//' "$1"
+}
 
-cargo r -r -- "$XDF" "$SRC" --out /tmp/zigbee/naive --backend naive
-cargo b -r --manifest-path /tmp/zigbee/naive/Cargo.toml
+crt_bootstrap
 
-cargo r -r -- "$XDF" "$SRC" --out /tmp/zigbee/tokio --backend tokio
-cargo b -r --manifest-path /tmp/zigbee/tokio/Cargo.toml
+rm -rf "$WORK"
+mkdir -p "$WORK/cpp"
 
-cargo r -r -- "$XDF" "$SRC" --out /tmp/zigbee/rayon --backend rayon
-cargo b -r --manifest-path /tmp/zigbee/rayon/Cargo.toml
+say "ZigBee: crt codegen + build (--orcc)"
+crt_variants "$WORK" "$XDF" "$SRC" --orcc
 
-Dataflow_Code_Generator -d "$SRC" -n "$XDF" -w /tmp/zigbee/cpp -s 16384 --orcc -c $(nproc) --opt_sched --silent
-gcc -O3 -x c -I/tmp/zigbee/cpp -c ZigBee/lib/native/linux.cpp -o /tmp/zigbee/cpp/linux.o
-g++ -O3 -std=c++11 -Wno-narrowing -I. -c /tmp/zigbee/cpp/main.cpp -o /tmp/zigbee/cpp/main.o
-g++ -O3 -std=c++11 -Wno-narrowing -I. -c /tmp/zigbee/cpp/orcc_compatibility.cpp -o /tmp/zigbee/cpp/orcc_compatibility.o
-g++ -O3 -std=c++11 /tmp/zigbee/cpp/main.o /tmp/zigbee/cpp/orcc_compatibility.o /tmp/zigbee/cpp/linux.o -o /tmp/zigbee/cpp/Top_ZigBee_tx_cpp -lpthread
+say "ZigBee: DCG codegen + build"
+Dataflow_Code_Generator -d "$SRC" -n "$XDF" -w "$WORK/cpp" \
+	-s "$CAP" --orcc -c "$(nproc)" --opt_sched --silent
+gcc -O3 -x c -I"$WORK/cpp" -c "$NATIVE" -o "$WORK/cpp/linux.o"
+g++ -O3 -std=c++11 -Wno-narrowing -I. -c "$WORK/cpp/main.cpp" -o "$WORK/cpp/main.o"
+g++ -O3 -std=c++11 -Wno-narrowing -I. -c "$WORK/cpp/orcc_compatibility.cpp" -o "$WORK/cpp/orcc.o"
+g++ -O3 -std=c++11 "$WORK/cpp/main.o" "$WORK/cpp/orcc.o" "$WORK/cpp/linux.o" \
+	-o "$WORK/cpp/$BIN" -lpthread
 
-hyperfine --warmup 3 -N \
-  -n crt-naive "/tmp/zigbee/naive/target/release/$BIN -i /tmp/zigbee/big.in -w /tmp/zigbee/out.txt" \
-  -n crt-tokio "/tmp/zigbee/tokio/target/release/$BIN -i /tmp/zigbee/big.in -w /tmp/zigbee/out.txt" \
-  -n crt-rayon "/tmp/zigbee/rayon/target/release/$BIN -i /tmp/zigbee/big.in -w /tmp/zigbee/out.txt" \
-  -n dcg-cpp "/tmp/zigbee/cpp/Top_ZigBee_tx_cpp -i /tmp/zigbee/big.in -w /tmp/zigbee/out.txt"
+declare -A RUNNER=([dcg-cpp]="$WORK/cpp/$BIN")
+for variant in "${VARIANTS[@]}"; do
+	RUNNER[crt-$variant]="$WORK/$variant/target/release/$BIN"
+done
+ORDER=(crt-naive crt-threads crt-rayon crt-tokio crt-ts-naive crt-ts-tokio dcg-cpp)
 
-rm -rf /tmp/zigbee
+say "ZigBee: correctness against reference output (1x input)"
+normalize "$REFERENCE" >"$WORK/reference.norm"
+failed=()
+for name in "${ORDER[@]}"; do
+	"${RUNNER[$name]}" -i "$INPUT" -w "$WORK/$name.out" || true
+	normalize "$WORK/$name.out" >"$WORK/$name.norm"
+	if cmp -s "$WORK/$name.norm" "$WORK/reference.norm"; then
+		note "$name: matches reference"
+	else
+		failed+=("$name")
+		note "$name: MISMATCH ($(wc -l <"$WORK/$name.norm") of $(wc -l <"$WORK/reference.norm") lines)"
+	fi
+done
+if [ ${#failed[@]} -eq 0 ]; then
+	note "all variants match the reference"
+else
+	note "mismatching variants: ${failed[*]}"
+	note "crt-tokio is a known open defect: its per-port mpsc channels let the sink's"
+	note "'done' token overtake queued 'hsp' samples, and the native exit(0) in"
+	note "print_cyclecount kills the process before those samples are written"
+fi
+
+say "ZigBee: benchmark (${REPEAT}x input)"
+for _ in $(seq "$REPEAT"); do cat "$INPUT"; done >"$WORK/big.in"
+
+args=()
+for name in "${ORDER[@]}"; do
+	args+=(-n "$name" "${RUNNER[$name]} -i $WORK/big.in -w $WORK/bench.out")
+done
+hyperfine --warmup 3 -N "${args[@]}"
+
+rm -rf "$WORK"

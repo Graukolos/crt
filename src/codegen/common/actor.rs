@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm, Stmt};
 
 use super::{
-    emit_expr, emit_stmt, emit_vardefs, fsm_variant, fsm_wrapper, ident, port_field, port_ref,
-    rust_type, type_ident, var_init, var_rust_type,
+    Priorities, emit_expr, emit_stmt, emit_vardefs, fsm_variant, fsm_wrapper, ident, port_field,
+    port_ref, rust_type, type_ident, var_init, var_rust_type,
 };
 
 pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
@@ -245,23 +245,20 @@ fn emit_actor_typestate(actor: &Actor) -> String {
     out.push_str("}\n\n");
 
     let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
+    let priorities = Priorities::new(actor);
     for s in &states {
         let here = fsm_variant(s);
-        let mut reachable = Vec::new();
+        let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
+            format!("{wrapper}::{}", fsm_variant(next))
+        });
         let mut tries = String::new();
-        for t in fsm.transitions.iter().filter(|t| &t.state == s) {
-            let next = format!("{wrapper}::{}", fsm_variant(&t.next));
-            for action_name in &t.actions {
-                if let Some(action) = lookup(action_name) {
-                    reachable.push(action);
-                    tries.push_str(&emit_action(
-                        action,
-                        &state,
-                        None,
-                        Commit::Move(next.as_str()),
-                    ));
-                }
-            }
+        for i in priorities.order(actor, &reachable) {
+            tries.push_str(&emit_action(
+                reachable[i],
+                &state,
+                None,
+                Commit::Move(nexts[i].as_str()),
+            ));
         }
         let _ = write!(
             out,
@@ -378,12 +375,14 @@ fn room_snapshots<'a>(actions: impl Iterator<Item = &'a Action>) -> String {
 
 fn emit_fire(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
     let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
+    let priorities = Priorities::new(actor);
 
     let Some(fsm) = &actor.fsm else {
-        let body: String = actor
-            .actions
-            .iter()
-            .map(|a| emit_action(a, state, None, Commit::Fired))
+        let candidates: Vec<&Action> = actor.actions.iter().collect();
+        let body: String = priorities
+            .order(actor, &candidates)
+            .into_iter()
+            .map(|i| emit_action(candidates[i], state, None, Commit::Fired))
             .collect();
         return format!("{}{body}", room_snapshots(actor.actions.iter()));
     };
@@ -394,16 +393,17 @@ fn emit_fire(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
     }
     let mut arms = String::new();
     for s in &states {
-        let mut reachable = Vec::new();
+        let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
+            format!("self.state = {ty}State::{};", fsm_variant(next))
+        });
         let mut tries = String::new();
-        for t in fsm.transitions.iter().filter(|t| &t.state == s) {
-            let next = format!("self.state = {ty}State::{};", fsm_variant(&t.next));
-            for action_name in &t.actions {
-                if let Some(action) = lookup(action_name) {
-                    reachable.push(action);
-                    tries.push_str(&emit_action(action, state, Some(&next), Commit::Fired));
-                }
-            }
+        for i in priorities.order(actor, &reachable) {
+            tries.push_str(&emit_action(
+                reachable[i],
+                state,
+                Some(&nexts[i]),
+                Commit::Fired,
+            ));
         }
         let _ = write!(
             arms,
@@ -413,6 +413,25 @@ fn emit_fire(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
         );
     }
     format!("        match self.state {{\n{arms}        }}")
+}
+
+fn state_candidates<'a>(
+    fsm: &ScheduleFsm,
+    state: &str,
+    lookup: impl Fn(&str) -> Option<&'a Action>,
+    next_code: impl Fn(&str) -> String,
+) -> (Vec<&'a Action>, Vec<String>) {
+    let mut actions = Vec::new();
+    let mut nexts = Vec::new();
+    for t in fsm.transitions.iter().filter(|t| t.state == state) {
+        for action_name in &t.actions {
+            if let Some(action) = lookup(action_name) {
+                actions.push(action);
+                nexts.push(next_code(&t.next));
+            }
+        }
+    }
+    (actions, nexts)
 }
 
 fn pattern_token_count(

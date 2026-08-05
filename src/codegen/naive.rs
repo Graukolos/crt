@@ -5,11 +5,10 @@ use std::path::Path;
 use crate::codegen::common::{
     Channels, actor_mod, emit_actor, emit_main_prelude, emit_shared_decls, inst_var,
 };
-use crate::codegen::{CodeGenerator, Program};
+use crate::codegen::{CodeGenerator, Options, Program};
 
 pub struct Naive {
-    pub cap: usize,
-    pub typestate: bool,
+    pub options: Options,
 }
 
 const PORTS_RS: &str = r"pub struct InPort<T> {
@@ -81,7 +80,7 @@ impl CodeGenerator for Naive {
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
         let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.cap, orcc, self.typestate) {
+        for (name, source) in emit_files(program, self.options, orcc) {
             let tokens = source.parse().map_err(|err| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -106,16 +105,11 @@ impl CodeGenerator for Naive {
     }
 }
 
-fn emit_files(
-    program: &Program<'_>,
-    cap: usize,
-    orcc: bool,
-    typestate: bool,
-) -> Vec<(String, String)> {
+fn emit_files(program: &Program<'_>, options: Options, orcc: bool) -> Vec<(String, String)> {
+    let typestate = options.typestate;
     let mut files = Vec::new();
 
-    let mut classes: Vec<&String> = program.actors.keys().collect();
-    classes.sort();
+    let classes: Vec<&String> = program.actors.keys().collect();
 
     for class in &classes {
         let actor = &program.actors[*class];
@@ -137,7 +131,7 @@ fn emit_files(
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    let _ = writeln!(main, "const CAP: usize = {cap};\n");
+    let _ = writeln!(main, "const CAP: usize = {};\n", options.cap);
     main.push_str(PORTS_RS);
     main.push('\n');
     main.push_str(&emit_shared_decls(program, orcc));

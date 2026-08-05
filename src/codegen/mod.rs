@@ -5,7 +5,7 @@ mod rayon;
 mod threads;
 mod tokio;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
 use std::io;
@@ -25,20 +25,37 @@ pub enum Backend {
     Tokio,
 }
 
+#[derive(Copy, Clone)]
+pub struct Options {
+    pub cap: usize,
+    pub fire_budget: usize,
+    pub typestate: bool,
+}
+
+impl Options {
+    pub fn fire_budget_literal(self) -> String {
+        if self.fire_budget == 0 {
+            "usize::MAX".to_string()
+        } else {
+            self.fire_budget.to_string()
+        }
+    }
+}
+
 impl Backend {
-    pub fn generator(self, cap: usize, typestate: bool) -> Box<dyn CodeGenerator> {
+    pub fn generator(self, options: Options) -> Box<dyn CodeGenerator> {
         match self {
-            Backend::Naive => Box::new(naive::Naive { cap, typestate }),
-            Backend::Threads => Box::new(threads::Threads { cap, typestate }),
-            Backend::Tokio => Box::new(tokio::Tokio { cap, typestate }),
-            Backend::Rayon => Box::new(rayon::Rayon { cap, typestate }),
+            Backend::Naive => Box::new(naive::Naive { options }),
+            Backend::Threads => Box::new(threads::Threads { options }),
+            Backend::Tokio => Box::new(tokio::Tokio { options }),
+            Backend::Rayon => Box::new(rayon::Rayon { options }),
         }
     }
 }
 
 pub struct Program<'a> {
     pub network: &'a Network,
-    pub actors: &'a HashMap<String, Box<Actor>>,
+    pub actors: &'a BTreeMap<String, Box<Actor>>,
     pub units: &'a [Unit],
     pub native_sources: &'a [PathBuf],
 }
