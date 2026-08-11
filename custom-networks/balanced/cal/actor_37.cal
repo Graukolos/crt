@@ -1,0 +1,98 @@
+actor actor_37() int X0, int X1 ==> int Y0, int Y1 :
+
+	int gstate_0 := 0;
+	int gstate_1 := 0;
+	int gstate_2 := 0;
+	int gstate_3 := 0;
+	int gstate_4 := 0;
+	int gstate_5 := 0;
+	int gstate_6 := 0;
+	int gstate_7 := 0;
+
+	act0 : action X0 : [x0_0], X1 : [x1_0, x1_1, x1_2] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0]
+	guard
+		gstate_5 >= 3
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int l_0 := 6,
+		int l_1 := 4
+	do
+		l_0 := x1_0 / 52;
+		if (l_1 > l_1) then
+			l_0 := x1_0 - 39;
+			l_0 := l_1 - l_0;
+			l_0 := l_1 * 4;
+			l_0 := l_1 + x1_0;
+			l_0 := x1_1 / 50;
+			l_0 := l_1 / 35;
+		else
+			l_0 := l_0 * 45;
+			l_1 := l_0 - 18;
+			l_1 := x1_0 * l_0;
+			l_0 := x1_1 - 36;
+			l_0 := x1_0 * l_0;
+			l_0 := x0_0 / 29;
+		end
+		l_0 := l_0 * x1_0;
+		l_1 := x1_2 + 45;
+		y0_0 := l_1;
+		y0_1 := l_0;
+		y0_2 := l_0;
+		y1_0 := l_1;
+		gstate_5 := (gstate_5 + 1) % 9;
+	end
+
+	act1 : action X0 : [x0_0], X1 : [x1_0, x1_1, x1_2] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0]
+	guard
+		gstate_5 < 3
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int l_0 := 10,
+		int l_1 := 5
+	do
+		if (x0_0 < 0) then
+			l_0 := l_0 * l_0;
+			l_0 := x1_2 * x0_0;
+			l_1 := l_0 - 47;
+			l_1 := x1_1 - x1_0;
+			l_0 := l_0 + 48;
+			l_0 := x1_0 - 5;
+			l_0 := l_1 / 29;
+			l_0 := l_0 - x0_0;
+			l_0 := x1_2 - x0_0;
+			l_1 := x0_0 + x1_2;
+			l_1 := l_1 + 5;
+		else
+			if (l_0 < l_1) then
+				l_0 := x0_0 * x1_0;
+			else
+				l_1 := x1_1 / 6;
+			end
+			l_1 := x1_1 * 48;
+			l_1 := l_1 * x1_1;
+			l_1 := x1_2 + x1_1;
+			l_0 := l_1 / 35;
+			l_1 := x1_1 * l_0;
+			l_0 := l_0 / 34;
+			l_0 := l_1 - l_0;
+			l_0 := l_1 + x1_2;
+			l_1 := l_0 + 5;
+		end
+		y0_0 := l_0;
+		y0_1 := l_1;
+		y0_2 := l_0;
+		y1_0 := l_0;
+		gstate_5 := (gstate_5 + 1);
+	end
+
+	priority
+		act1 > act1;
+	end
+
+end

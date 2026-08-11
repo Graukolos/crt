@@ -1,0 +1,36 @@
+actor actor_58() int X0 ==> int Y0 :
+
+	int gstate_0 := 0;
+
+	act0 : action X0 : [x0_0, x0_1] ==> Y0 : [y0_0, y0_1, y0_2]
+	guard
+		x0_0 >= 2
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int l_0 := 2
+	do
+		l_0 := x0_1 - x0_0;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+	end
+
+	act1 : action X0 : [x0_0, x0_1] ==> Y0 : [y0_0, y0_1, y0_2]
+	guard
+		x0_0 < 2
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int l_0 := 11
+	do
+		l_0 := l_0 + 51;
+		l_0 := x0_0 * l_0;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+	end
+
+end

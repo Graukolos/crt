@@ -1,0 +1,134 @@
+actor actor_113() int X0, int X1, int X2 ==> int Y0 :
+
+	int gstate_0 := 0;
+	int gstate_1 := 0;
+
+	act0 : action X0 : [x0_0, x0_1, x0_2, x0_3], X1 : [x1_0, x1_1, x1_2], X2 : [x2_0, x2_1] ==> Y0 : [y0_0]
+	guard
+		gstate_0 >= 5 && gstate_1 >= 2
+	var
+		int y0_0,
+		int l_0 := 2,
+		int l_1 := 5
+	do
+		l_1 := l_1 / 3;
+		l_0 := l_0 / 29;
+		l_1 := l_1 * 45;
+		if (x0_0 < 15) then
+			l_0 := x0_2 / 41;
+			l_1 := x1_2 - 13;
+		else
+			l_0 := l_0 * l_0;
+			l_0 := x0_2 - x0_2;
+		end
+		l_0 := x0_2 / 13;
+		y0_0 := l_0;
+		gstate_0 := (gstate_0 + 1) % 12;
+		gstate_1 := (gstate_1 + 1) % 9;
+	end
+
+	act1 : action X0 : [x0_0, x0_1, x0_2, x0_3], X1 : [x1_0, x1_1, x1_2], X2 : [x2_0, x2_1] ==> Y0 : [y0_0]
+	guard
+		gstate_0 < 5 && gstate_1 >= 2
+	var
+		int y0_0,
+		int l_0 := 16,
+		int l_1 := 7,
+		int l_2 := 11,
+		int l_3 := 11
+	do
+		l_2 := x2_0 * l_0;
+		l_1 := l_2 - 30;
+		l_0 := l_0 - 40;
+		l_0 := x0_2 + x0_3;
+		l_0 := l_3 - 8;
+		l_0 := x0_3 + l_2;
+		l_0 := x0_3 + 1;
+		l_0 := x1_0 / 48;
+		l_0 := l_3 / 26;
+		l_3 := l_3 + 14;
+		l_2 := x0_0 / 6;
+		l_2 := l_2 - 17;
+		l_2 := l_1 / 52;
+		l_3 := x1_0 - 7;
+		l_2 := l_3 - l_0;
+		l_0 := l_0 - 16;
+		l_3 := x2_1 - 10;
+		if (x1_0 > 8) then
+			l_3 := x0_0 + 17;
+			l_2 := l_0 + l_1;
+		else
+			l_1 := l_1 * x1_1;
+			l_0 := l_2 - x0_1;
+		end
+		if (x0_2 > 21) then
+			l_3 := l_0 + 47;
+			l_3 := l_0 * 46;
+			l_0 := l_1 * 52;
+		else
+			l_1 := x0_1 * x1_1;
+			l_1 := x0_3 * 26;
+			l_1 := x1_1 / 37;
+		end
+		y0_0 := l_2;
+		gstate_0 := (gstate_0 + 1);
+		gstate_1 := (gstate_1 + 1) % 3;
+	end
+
+	act2 : action X0 : [x0_0, x0_1, x0_2, x0_3], X1 : [x1_0, x1_1, x1_2], X2 : [x2_0, x2_1] ==> Y0 : [y0_0]
+	guard
+		gstate_0 >= 5 && gstate_1 < 2
+	var
+		int y0_0,
+		int l_0 := 11,
+		int l_1 := 10,
+		int l_2 := 5
+	do
+		l_0 := x0_2 + l_1;
+		l_1 := x1_0 / 24;
+		l_0 := x0_3 - 18;
+		l_2 := x1_2 / 10;
+		l_1 := x1_2 - l_2;
+		l_2 := x0_2 / 16;
+		l_2 := l_1 / 28;
+		l_1 := l_1 + 14;
+		l_1 := l_2 + 55;
+		l_1 := x0_0 - 1;
+		l_0 := l_2 / 46;
+		l_1 := l_1 + 24;
+		l_2 := x0_3 + l_2;
+		l_2 := l_2 - l_1;
+		if (l_2 < l_2) then
+			l_1 := x1_2 * x2_0;
+			l_0 := x1_0 + 16;
+			l_1 := x1_0 / 17;
+			l_0 := x2_0 * l_1;
+		else
+			l_1 := x2_1 - 49;
+			l_2 := x2_0 - x1_1;
+			l_1 := l_0 - 54;
+			l_1 := x1_2 / 42;
+		end
+		l_0 := x2_1 * x1_1;
+		y0_0 := l_1;
+		gstate_0 := (gstate_0 + 1) % 11;
+		gstate_1 := (gstate_1 + 1);
+	end
+
+	act3 : action X0 : [x0_0, x0_1, x0_2, x0_3], X1 : [x1_0, x1_1, x1_2], X2 : [x2_0, x2_1] ==> Y0 : [y0_0]
+	guard
+		gstate_0 < 5 && gstate_1 < 2
+	var
+		int y0_0,
+		int l_0 := 4
+	do
+		l_0 := l_0 / 33;
+		l_0 := l_0 * 47;
+		l_0 := x0_2 - x1_2;
+		l_0 := x1_2 * 43;
+		y0_0 := l_0;
+		gstate_0 := (gstate_0 + 1);
+		gstate_1 := (gstate_1 + 1);
+	end
+
+end

@@ -1,0 +1,26 @@
+actor actor_38() int X0, int X1 ==> int Y0, int Y1, int Y2 :
+
+	act0 : action X0 : [x0_0], X1 : [x1_0, x1_1] ==> Y0 : [y0_0], Y1 : [y1_0, y1_1], Y2 : [y2_0]
+	var
+		int y0_0,
+		int y1_0,
+		int y1_1,
+		int y2_0,
+		int l_0 := 12
+	do
+		if (l_0 > 3) then
+			l_0 := x1_0 - l_0;
+			l_0 := x0_0 - 45;
+			l_0 := x1_0 - 29;
+		else
+			l_0 := x1_0 + 35;
+			l_0 := l_0 - 47;
+			l_0 := l_0 / 33;
+		end
+		y0_0 := l_0;
+		y1_0 := l_0;
+		y1_1 := l_0;
+		y2_0 := l_0;
+	end
+
+end

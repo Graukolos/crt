@@ -1,0 +1,73 @@
+actor actor_22() int X0, int X1, int X2, int X3 ==> int Y0, int Y1, int Y2, int Y3 :
+
+	act0 : action X0 : [x0_0, x0_1, x0_2], X1 : [x1_0, x1_1, x1_2], X2 : [x2_0, x2_1, x2_2], X3 : [x3_0, x3_1, x3_2] ==> Y0 : [y0_0, y0_1], Y1 : [y1_0], Y2 : [y2_0, y2_1], Y3 : [y3_0, y3_1, y3_2]
+	guard
+		x1_0 >= 2
+	var
+		int y0_0,
+		int y0_1,
+		int y1_0,
+		int y2_0,
+		int y2_1,
+		int y3_0,
+		int y3_1,
+		int y3_2,
+		int l_0 := 14
+	do
+		if (l_0 < x0_2) then
+			l_0 := l_0 * l_0;
+			l_0 := l_0 + 22;
+		else
+			l_0 := l_0 + 9;
+			l_0 := l_0 * l_0;
+		end
+		l_0 := l_0 * x2_0;
+		l_0 := l_0 / 35;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y1_0 := l_0;
+		y2_0 := l_0;
+		y2_1 := l_0;
+		y3_0 := l_0;
+		y3_1 := l_0;
+		y3_2 := l_0;
+	end
+
+	act1 : action X0 : [x0_0, x0_1, x0_2], X1 : [x1_0, x1_1, x1_2], X2 : [x2_0, x2_1, x2_2], X3 : [x3_0, x3_1, x3_2] ==> Y0 : [y0_0, y0_1], Y1 : [y1_0], Y2 : [y2_0, y2_1], Y3 : [y3_0, y3_1, y3_2]
+	guard
+		x1_0 < 2
+	var
+		int y0_0,
+		int y0_1,
+		int y1_0,
+		int y2_0,
+		int y2_1,
+		int y3_0,
+		int y3_1,
+		int y3_2,
+		int l_0 := 16,
+		int l_1 := 1
+	do
+		l_1 := l_1 / 54;
+		l_0 := l_0 + x3_0;
+		l_1 := l_0 / 48;
+		if (l_1 < 8) then
+			l_0 := l_0 - l_0;
+			l_1 := l_0 - l_0;
+			l_0 := l_0 / 42;
+		else
+			l_0 := l_1 + 32;
+			l_1 := l_0 / 49;
+			l_1 := l_0 * 4;
+		end
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y1_0 := l_1;
+		y2_0 := l_1;
+		y2_1 := l_0;
+		y3_0 := l_0;
+		y3_1 := l_0;
+		y3_2 := l_0;
+	end
+
+end

@@ -1,0 +1,78 @@
+actor actor_4() int X0 ==> int Y0, int Y1, int Y2, int Y3 :
+
+	act0 : action X0 : [x0_0] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0, y1_1, y1_2], Y2 : [y2_0], Y3 : [y3_0, y3_1, y3_2]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int y2_0,
+		int y3_0,
+		int y3_1,
+		int y3_2,
+		int l_0 := 14,
+		int l_1 := 8
+	do
+		l_1 := l_0 + l_0;
+		l_0 := x0_0 * 43;
+		l_0 := l_0 * 29;
+		l_0 := l_0 / 41;
+		l_0 := l_0 * l_1;
+		l_0 := x0_0 / 36;
+		l_0 := x0_0 + 55;
+		l_0 := x0_0 + x0_0;
+		y0_0 := l_1;
+		y0_1 := l_0;
+		y0_2 := l_1;
+		y1_0 := l_1;
+		y1_1 := l_0;
+		y1_2 := l_0;
+		y2_0 := l_1;
+		y3_0 := l_1;
+		y3_1 := l_0;
+		y3_2 := l_1;
+	end
+
+	act1 : action X0 : [x0_0] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0, y1_1, y1_2], Y2 : [y2_0], Y3 : [y3_0, y3_1, y3_2]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int y2_0,
+		int y3_0,
+		int y3_1,
+		int y3_2,
+		int l_0 := 4
+	do
+		l_0 := l_0 / 37;
+		l_0 := l_0 + x0_0;
+		l_0 := l_0 * l_0;
+		l_0 := l_0 - l_0;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+		y1_0 := l_0;
+		y1_1 := l_0;
+		y1_2 := l_0;
+		y2_0 := l_0;
+		y3_0 := l_0;
+		y3_1 := l_0;
+		y3_2 := l_0;
+	end
+
+	schedule fsm state0:
+		state0(act0) --> state1;
+		state1(act0) --> state0;
+		state1(act1) --> state0;
+	end
+
+	priority
+		act1 > act0;
+	end
+
+end

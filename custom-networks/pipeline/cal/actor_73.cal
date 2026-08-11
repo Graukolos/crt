@@ -1,0 +1,57 @@
+actor actor_73() int X0, int X1 ==> int Y0, int Y1 :
+
+	act0 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0], Y1 : [y1_0]
+	var
+		int y0_0,
+		int y1_0,
+		int l_0 := 17,
+		int l_1 := 2
+	do
+		l_1 := l_1 - l_0;
+		l_1 := l_1 / 19;
+		l_1 := l_0 + x0_0;
+		if (x0_0 < 5) then
+			l_0 := x1_0 * 4;
+			l_1 := l_0 - l_0;
+			l_1 := x1_0 - 37;
+			l_1 := x0_0 - x0_0;
+			l_1 := l_0 + 47;
+			l_1 := x0_0 + 24;
+		else
+			l_0 := l_0 - 14;
+			l_1 := l_0 / 20;
+			l_0 := l_0 * l_0;
+			l_0 := x1_0 * x0_0;
+			l_0 := x1_0 + 55;
+			l_0 := x1_0 / 4;
+		end
+		l_1 := l_1 - 43;
+		l_1 := x0_0 / 55;
+		y0_0 := l_1;
+		y1_0 := l_0;
+	end
+
+	act1 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0], Y1 : [y1_0]
+	var
+		int y0_0,
+		int y1_0,
+		int l_0 := 4,
+		int l_1 := 15
+	do
+		l_0 := l_1 - 27;
+		l_0 := x0_0 - 48;
+		l_0 := l_0 / 38;
+		l_1 := x0_0 * x0_0;
+		l_0 := x0_0 - 54;
+		l_1 := x0_0 - x1_0;
+		l_0 := l_0 * l_0;
+		y0_0 := l_0;
+		y1_0 := l_0;
+	end
+
+	schedule fsm state0:
+		state0(act0) --> state1;
+		state1(act1) --> state0;
+	end
+
+end

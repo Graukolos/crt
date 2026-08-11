@@ -1,0 +1,51 @@
+actor actor_13() int X0 ==> int Y0, int Y1 :
+
+	act0 : action X0 : [x0_0] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0, y1_1, y1_2]
+	guard
+		x0_0 >= 3
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int l_0 := 6
+	do
+		l_0 := l_0 - 53;
+		l_0 := l_0 / 51;
+		l_0 := x0_0 + l_0;
+		l_0 := x0_0 + 51;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+		y1_0 := l_0;
+		y1_1 := l_0;
+		y1_2 := l_0;
+	end
+
+	act1 : action X0 : [x0_0] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0, y1_1, y1_2]
+	guard
+		x0_0 < 3
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int l_0 := 12
+	do
+		l_0 := l_0 + 40;
+		l_0 := x0_0 + x0_0;
+		l_0 := x0_0 + 5;
+		l_0 := x0_0 / 34;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+		y1_0 := l_0;
+		y1_1 := l_0;
+		y1_2 := l_0;
+	end
+
+end

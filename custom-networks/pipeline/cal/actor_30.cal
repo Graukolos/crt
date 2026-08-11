@@ -1,0 +1,50 @@
+actor actor_30() int X0, int X1 ==> int Y0 :
+
+	int gstate_0 := 0;
+	int gstate_1 := 0;
+
+	act0 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0]
+	guard
+		x1_0 >= 5
+	var
+		int y0_0,
+		int l_0 := 11
+	do
+		l_0 := x0_0 / 3;
+		if (l_0 > 8) then
+			l_0 := l_0 / 1;
+			l_0 := l_0 + 13;
+			l_0 := x1_0 * 5;
+			l_0 := l_0 - 43;
+		else
+			l_0 := x0_0 - x1_0;
+			l_0 := l_0 + 27;
+			l_0 := l_0 * x0_0;
+			l_0 := l_0 + x0_0;
+		end
+		y0_0 := l_0;
+	end
+
+	act1 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0]
+	guard
+		x1_0 < 5
+	var
+		int y0_0,
+		int l_0 := 12
+	do
+		if (l_0 < x0_0) then
+			l_0 := l_0 - x1_0;
+			l_0 := x0_0 + l_0;
+		else
+			l_0 := x1_0 / 13;
+			l_0 := x0_0 - l_0;
+		end
+		l_0 := l_0 * l_0;
+		y0_0 := l_0;
+	end
+
+	priority
+		act1 > act1;
+	end
+
+end

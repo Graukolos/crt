@@ -1,0 +1,19 @@
+actor sink() int X0 ==> :
+
+	uint count := 0;
+
+	@native procedure test_exit_rnd() end
+
+	act1 : action X0 : [x0] ==>
+	guard count < 1000000
+	do
+		count := count + 1;
+	end
+
+	act2 : action ==>
+	guard count = 1000000
+	do
+		test_exit_rnd();
+		count := count + 1;
+	end
+end

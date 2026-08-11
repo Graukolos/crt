@@ -1,0 +1,131 @@
+actor actor_8() int X0, int X1 ==> int Y0 :
+
+	act0 : action X0 : [x0_0, x0_1], X1 : [x1_0] ==> Y0 : [y0_0, y0_1, y0_2]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int l_0 := 17,
+		int l_1 := 17
+	do
+		l_0 := l_0 * l_0;
+		l_1 := l_0 / 43;
+		l_1 := x1_0 * 26;
+		l_1 := x0_0 - 37;
+		l_1 := x0_0 * x1_0;
+		l_1 := x0_0 - 24;
+		l_0 := x0_1 + 22;
+		l_0 := l_1 - l_0;
+		l_1 := l_1 * 10;
+		if (x0_0 > x0_0) then
+			l_1 := x0_1 * 31;
+			l_1 := x0_1 * 23;
+		else
+			l_1 := l_0 - l_0;
+			l_0 := l_0 / 53;
+		end
+		l_1 := x0_0 + 38;
+		y0_0 := l_0;
+		y0_1 := l_1;
+		y0_2 := l_0;
+	end
+
+	act1 : action X0 : [x0_0, x0_1], X1 : [x1_0] ==> Y0 : [y0_0, y0_1, y0_2]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int l_0 := 7
+	do
+		l_0 := x1_0 / 45;
+		l_0 := x0_1 * x0_0;
+		if (x0_0 < 14) then
+			l_0 := x1_0 * 50;
+			l_0 := x0_1 - 20;
+		else
+			l_0 := x0_1 * 47;
+			l_0 := l_0 / 54;
+		end
+		l_0 := x0_0 - l_0;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+	end
+
+	act2 : action X0 : [x0_0, x0_1], X1 : [x1_0] ==> Y0 : [y0_0, y0_1, y0_2]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int l_0 := 7,
+		int l_1 := 7
+	do
+		if (x0_1 < x0_0) then
+			l_0 := x0_0 - 37;
+			l_0 := x0_0 + 3;
+			l_0 := x0_0 * 49;
+			l_1 := x1_0 + l_0;
+			l_1 := l_1 / 13;
+			l_0 := x0_1 + x0_1;
+			l_0 := l_1 * 22;
+		else
+			l_1 := x0_1 + 37;
+			if (l_1 < 17) then
+				l_0 := l_1 / 35;
+			else
+				l_0 := x0_0 / 28;
+			end
+			l_0 := x0_1 / 3;
+			l_1 := x0_0 / 7;
+			l_0 := x0_0 - l_1;
+			l_1 := x1_0 * 3;
+		end
+		l_0 := l_0 + x0_1;
+		l_1 := l_1 * 46;
+		l_0 := l_1 / 33;
+		l_1 := l_0 * l_0;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_1;
+	end
+
+	act3 : action X0 : [x0_0, x0_1], X1 : [x1_0] ==> Y0 : [y0_0, y0_1, y0_2]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int l_0 := 3,
+		int l_1 := 11
+	do
+		l_1 := x1_0 * 16;
+		l_1 := l_1 + l_1;
+		l_0 := l_0 + 30;
+		l_0 := l_1 / 20;
+		l_0 := x0_1 - 34;
+		l_0 := x0_0 / 48;
+		l_1 := x1_0 / 44;
+		l_0 := l_0 + x0_1;
+		l_1 := l_0 * x0_1;
+		l_0 := l_0 - 25;
+		y0_0 := l_1;
+		y0_1 := l_1;
+		y0_2 := l_0;
+	end
+
+	schedule fsm state0:
+		state0(act0) --> state1;
+		state1(act0) --> state2;
+		state1(act1) --> state2;
+		state2(act0) --> state3;
+		state2(act2) --> state3;
+		state3(act0) --> state0;
+		state3(act3) --> state0;
+	end
+
+	priority
+		act1 > act0;
+		act2 > act0;
+		act3 > act0;
+	end
+
+end

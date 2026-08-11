@@ -1,0 +1,49 @@
+actor actor_141() int X0, int X1, int X2 ==> int Y0 :
+
+	act0 : action X0 : [x0_0, x0_1, x0_2], X1 : [x1_0, x1_1], X2 : [x2_0, x2_1, x2_2] ==> Y0 : [y0_0]
+	guard
+		x0_0 >= 1
+	var
+		int y0_0,
+		int l_0 := 3
+	do
+		l_0 := x0_2 - x2_2;
+		l_0 := l_0 / 19;
+		l_0 := l_0 - 38;
+		y0_0 := l_0;
+	end
+
+	act1 : action X0 : [x0_0, x0_1, x0_2], X1 : [x1_0, x1_1], X2 : [x2_0, x2_1, x2_2] ==> Y0 : [y0_0]
+	guard
+		x0_0 < 1
+	var
+		int y0_0,
+		int l_0 := 15,
+		int l_1 := 8
+	do
+		l_0 := x0_1 + 53;
+		l_1 := x2_2 - 15;
+		if (l_1 < 11) then
+			l_0 := l_0 + l_1;
+			l_0 := l_0 - l_1;
+			l_1 := x0_2 + 38;
+			l_0 := x1_1 + x2_1;
+			l_0 := l_0 / 32;
+			l_1 := l_0 * 48;
+		else
+			l_1 := x1_1 * x1_0;
+			l_0 := l_0 * x1_0;
+			l_0 := l_0 - x1_1;
+			l_1 := l_0 * 34;
+			l_1 := x1_0 * l_0;
+			l_1 := x2_1 + x2_1;
+		end
+		l_0 := x2_2 + 9;
+		y0_0 := l_0;
+	end
+
+	priority
+		act1 > act1;
+	end
+
+end

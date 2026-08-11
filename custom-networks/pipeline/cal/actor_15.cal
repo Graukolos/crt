@@ -1,0 +1,45 @@
+actor actor_15() int X0 ==> int Y0 :
+
+	act0 : action X0 : [x0_0] ==> Y0 : [y0_0]
+	var
+		int y0_0,
+		int l_0 := 15
+	do
+		l_0 := l_0 + x0_0;
+		y0_0 := l_0;
+	end
+
+	act1 : action X0 : [x0_0] ==> Y0 : [y0_0]
+	var
+		int y0_0,
+		int l_0 := 6
+	do
+		l_0 := x0_0 / 17;
+		l_0 := x0_0 - 41;
+		l_0 := x0_0 - l_0;
+		l_0 := x0_0 + l_0;
+		l_0 := l_0 + 22;
+		l_0 := l_0 - l_0;
+		y0_0 := l_0;
+	end
+
+	act2 : action X0 : [x0_0] ==> Y0 : [y0_0]
+	var
+		int y0_0,
+		int l_0 := 15
+	do
+		l_0 := x0_0 / 19;
+		l_0 := x0_0 + 4;
+		l_0 := x0_0 * 44;
+		l_0 := l_0 / 3;
+		l_0 := l_0 / 1;
+		y0_0 := l_0;
+	end
+
+	schedule fsm state0:
+		state0(act0) --> state1;
+		state1(act1) --> state2;
+		state2(act2) --> state0;
+	end
+
+end

@@ -1,0 +1,10 @@
+actor src() ==> int Y0 : 
+
+	int count := 0;
+
+	act1: action ==> Y0 : [count]
+		guard count < 1000000
+	do
+		count := count + 1;
+	end
+end

@@ -1,0 +1,73 @@
+actor actor_78() int X0, int X1 ==> int Y0, int Y1, int Y2 :
+
+	int gstate_0 := 0;
+
+	act0 : action X0 : [x0_0, x0_1, x0_2, x0_3], X1 : [x1_0, x1_1] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0, y1_1, y1_2], Y2 : [y2_0, y2_1]
+	guard
+		gstate_0 >= 2
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int y2_0,
+		int y2_1,
+		int l_0 := 9
+	do
+		l_0 := x1_0 / 40;
+		l_0 := x1_1 + l_0;
+		l_0 := x0_0 + 29;
+		l_0 := l_0 / 54;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+		y1_0 := l_0;
+		y1_1 := l_0;
+		y1_2 := l_0;
+		y2_0 := l_0;
+		y2_1 := l_0;
+		gstate_0 := (gstate_0 + 1) % 2;
+	end
+
+	act1 : action X0 : [x0_0, x0_1, x0_2, x0_3], X1 : [x1_0, x1_1] ==> Y0 : [y0_0, y0_1, y0_2], Y1 : [y1_0, y1_1, y1_2], Y2 : [y2_0, y2_1]
+	guard
+		gstate_0 < 2
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int y2_0,
+		int y2_1,
+		int l_0 := 1,
+		int l_1 := 17
+	do
+		l_0 := l_1 + l_0;
+		l_0 := x1_0 * x1_0;
+		l_0 := x1_1 + x1_1;
+		l_1 := x0_2 - 48;
+		l_1 := l_1 / 8;
+		l_1 := x0_3 * 31;
+		l_0 := l_1 / 18;
+		l_1 := l_1 + 43;
+		l_1 := x0_1 + x0_2;
+		l_1 := l_0 * l_1;
+		l_1 := x0_1 / 53;
+		l_0 := l_0 * l_1;
+		l_1 := x0_2 / 37;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_1;
+		y1_0 := l_0;
+		y1_1 := l_1;
+		y1_2 := l_0;
+		y2_0 := l_1;
+		y2_1 := l_0;
+		gstate_0 := (gstate_0 + 1);
+	end
+
+end

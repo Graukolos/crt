@@ -1,0 +1,137 @@
+actor actor_48() int X0, int X1 ==> int Y0, int Y1 :
+
+	act0 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0], Y1 : [y1_0]
+	var
+		int y0_0,
+		int y1_0,
+		int l_0 := 11,
+		int l_1 := 2,
+		int l_2 := 2,
+		int l_3 := 1
+	do
+		l_1 := x0_0 - l_3;
+		l_3 := l_0 * 13;
+		l_3 := x0_0 + 45;
+		l_0 := l_1 / 28;
+		l_1 := x0_0 + 47;
+		if (x0_0 > 9) then
+			l_0 := x0_0 + l_0;
+			l_3 := l_0 + l_1;
+			l_2 := x1_0 * 2;
+			l_1 := l_1 * 21;
+			l_0 := x0_0 - x0_0;
+			l_3 := l_3 / 19;
+			l_0 := l_1 * 35;
+			l_0 := l_2 + l_2;
+		else
+			l_0 := l_3 - x1_0;
+			l_3 := l_0 * l_2;
+			l_3 := l_3 - 21;
+			l_2 := l_3 * 39;
+			l_0 := x0_0 * x1_0;
+			l_1 := x1_0 / 44;
+			l_2 := x1_0 / 1;
+			l_1 := l_3 - 17;
+		end
+		l_3 := x0_0 * 49;
+		l_2 := l_1 * 14;
+		l_3 := x0_0 + 44;
+		l_2 := x1_0 + 1;
+		l_1 := l_1 / 7;
+		l_0 := l_3 - 8;
+		l_2 := l_2 / 8;
+		if (l_0 < 11) then
+			l_3 := l_2 / 35;
+			l_3 := x1_0 * x0_0;
+			l_0 := l_0 + x0_0;
+			l_1 := l_1 - 35;
+			l_1 := l_0 - l_1;
+		else
+			l_1 := l_3 / 14;
+			l_2 := l_1 / 39;
+			l_0 := x1_0 - l_1;
+			l_2 := l_1 * 26;
+			l_3 := l_0 * x1_0;
+		end
+		y0_0 := l_2;
+		y1_0 := l_0;
+	end
+
+	act1 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0], Y1 : [y1_0]
+	var
+		int y0_0,
+		int y1_0,
+		int l_0 := 11,
+		int l_1 := 3,
+		int l_2 := 14
+	do
+		l_2 := l_0 / 19;
+		l_0 := x0_0 - x1_0;
+		l_0 := x0_0 + x0_0;
+		l_1 := l_1 * 50;
+		l_1 := x1_0 - x0_0;
+		l_1 := x0_0 + x0_0;
+		l_1 := l_1 + x0_0;
+		l_0 := l_2 - x1_0;
+		l_2 := x0_0 - 16;
+		l_2 := x0_0 / 52;
+		l_0 := l_1 * 51;
+		l_2 := l_0 + 41;
+		l_2 := x1_0 + l_2;
+		l_2 := x1_0 + 2;
+		l_0 := x0_0 / 14;
+		l_0 := l_1 / 41;
+		l_2 := l_1 + x1_0;
+		l_1 := x1_0 * 46;
+		y0_0 := l_0;
+		y1_0 := l_1;
+	end
+
+	act2 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0], Y1 : [y1_0]
+	var
+		int y0_0,
+		int y1_0,
+		int l_0 := 9
+	do
+		if (x1_0 > x0_0) then
+			l_0 := x1_0 - 12;
+			l_0 := x0_0 / 49;
+		else
+			l_0 := x0_0 + x1_0;
+			l_0 := x1_0 + x1_0;
+		end
+		l_0 := x1_0 + 27;
+		y0_0 := l_0;
+		y1_0 := l_0;
+	end
+
+	act3 : action X0 : [x0_0], X1 : [x1_0] ==> Y0 : [y0_0], Y1 : [y1_0]
+	var
+		int y0_0,
+		int y1_0,
+		int l_0 := 3
+	do
+		l_0 := x0_0 + 44;
+		l_0 := x0_0 + 12;
+		l_0 := l_0 / 40;
+		y0_0 := l_0;
+		y1_0 := l_0;
+	end
+
+	schedule fsm state0:
+		state0(act0) --> state1;
+		state1(act0) --> state2;
+		state1(act1) --> state2;
+		state2(act0) --> state3;
+		state2(act2) --> state3;
+		state3(act0) --> state0;
+		state3(act3) --> state0;
+	end
+
+	priority
+		act1 > act0;
+		act2 > act0;
+		act3 > act0;
+	end
+
+end

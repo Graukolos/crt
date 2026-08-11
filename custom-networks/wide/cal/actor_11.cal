@@ -1,0 +1,38 @@
+actor actor_11() int X0 ==> int Y0, int Y1, int Y2 :
+
+	act0 : action X0 : [x0_0] ==> Y0 : [y0_0, y0_1, y0_2, y0_3], Y1 : [y1_0, y1_1, y1_2, y1_3], Y2 : [y2_0, y2_1, y2_2, y2_3]
+	var
+		int y0_0,
+		int y0_1,
+		int y0_2,
+		int y0_3,
+		int y1_0,
+		int y1_1,
+		int y1_2,
+		int y1_3,
+		int y2_0,
+		int y2_1,
+		int y2_2,
+		int y2_3,
+		int l_0 := 15
+	do
+		l_0 := l_0 / 34;
+		l_0 := x0_0 / 40;
+		l_0 := x0_0 + 52;
+		l_0 := x0_0 * x0_0;
+		l_0 := x0_0 + 16;
+		y0_0 := l_0;
+		y0_1 := l_0;
+		y0_2 := l_0;
+		y0_3 := l_0;
+		y1_0 := l_0;
+		y1_1 := l_0;
+		y1_2 := l_0;
+		y1_3 := l_0;
+		y2_0 := l_0;
+		y2_1 := l_0;
+		y2_2 := l_0;
+		y2_3 := l_0;
+	end
+
+end
