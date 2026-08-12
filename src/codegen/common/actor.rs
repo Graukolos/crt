@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm, Stmt};
@@ -86,14 +86,14 @@ pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
             out,
             "    pub fn init(&mut self) {{\n{}{}    }}\n\n",
             room_snapshots(std::iter::once(init)),
-            emit_action(init, &state, None, Commit::Fallthrough)
+            emit_action(actor, init, &state, None, Commit::Fallthrough)
         );
     }
 
     let _ = write!(
         out,
-        "    pub fn fire(&mut self) -> bool {{\n{}\n        false\n    }}\n}}\n",
-        emit_fire(actor, &state, &ty)
+        "    pub fn schedule(&mut self) -> usize {{\n{}    }}\n}}\n",
+        emit_schedule(actor, &state, &ty)
     );
 
     out
@@ -239,7 +239,7 @@ fn emit_actor_typestate(actor: &Actor) -> String {
             out,
             "\n    pub fn init(&mut self) {{\n{}{}    }}\n",
             room_snapshots(std::iter::once(init)),
-            emit_action(init, &state, None, Commit::Fallthrough)
+            emit_action(actor, init, &state, None, Commit::Fallthrough)
         );
     }
     out.push_str("}\n\n");
@@ -254,6 +254,7 @@ fn emit_actor_typestate(actor: &Actor) -> String {
         let mut tries = String::new();
         for i in priorities.order(actor, &reachable) {
             tries.push_str(&emit_action(
+                actor,
                 reachable[i],
                 &state,
                 None,
@@ -316,6 +317,10 @@ fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
         dispatch("__s.step()")
     );
 
+    out.push_str(
+        "\n    pub fn schedule(&mut self) -> usize {\n        let mut __fired = 0usize;\n        while __fired < FIRE_BUDGET && self.fire() {\n            __fired += 1;\n        }\n        __fired\n    }\n",
+    );
+
     for (name, port_ty) in port_types(actor) {
         let field = port_field(&name);
         let _ = write!(
@@ -354,6 +359,146 @@ fn room_snapshot(port: &str) -> String {
     format!("__room_{}", port_field(port))
 }
 
+fn avail_counter(port: &str) -> String {
+    format!("__avail_{}", port_field(port))
+}
+
+fn stmt_ports(stmts: &[Stmt], touched: &mut BTreeSet<String>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::OutputWrite { port, .. } | Stmt::InputRead { port, .. } => {
+                touched.insert(port.clone());
+            }
+            Stmt::If { then, els, .. } => {
+                stmt_ports(then, touched);
+                stmt_ports(els, touched);
+            }
+            Stmt::Block { stmts, .. } | Stmt::While { stmts, .. } | Stmt::Foreach { stmts, .. } => {
+                stmt_ports(stmts, touched);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn guard_time_evaluable(expr: &Expr, locals: &HashSet<String>) -> bool {
+    match expr {
+        Expr::Paren(inner) => guard_time_evaluable(inner, locals),
+        Expr::BinOp { left, right, .. } => {
+            guard_time_evaluable(left, locals) && guard_time_evaluable(right, locals)
+        }
+        Expr::Literal { .. } | Expr::FsmEnumElement { .. } => true,
+        Expr::Identifier {
+            name,
+            indices,
+            call,
+            ..
+        } => {
+            !locals.contains(name)
+                && indices.iter().all(|e| guard_time_evaluable(e, locals))
+                && call
+                    .iter()
+                    .flatten()
+                    .all(|e| guard_time_evaluable(e, locals))
+        }
+        Expr::PortPreview { .. } | Expr::PortSize { .. } | Expr::PortFree { .. } => false,
+        Expr::Ternary { cond, then, els } => {
+            guard_time_evaluable(cond, locals)
+                && guard_time_evaluable(then, locals)
+                && guard_time_evaluable(els, locals)
+        }
+        Expr::ListComprehension {
+            expressions,
+            generators,
+        } => {
+            expressions.iter().all(|e| guard_time_evaluable(e, locals))
+                && generators.iter().all(|g| {
+                    guard_time_evaluable(&g.start, locals) && guard_time_evaluable(&g.end, locals)
+                })
+        }
+    }
+}
+
+pub fn output_burst(actor: &Actor, port: &str) -> Option<String> {
+    let state = actor_state(actor);
+    let mut counts: Vec<String> = Vec::new();
+    for action in actor.actions.iter().chain(actor.init.iter()) {
+        let mut touched = BTreeSet::new();
+        stmt_ports(&action.stmts, &mut touched);
+        if touched.contains(port) {
+            return None;
+        }
+        let mut total: Vec<String> = Vec::new();
+        for output in action.output_expressions.iter().filter(|o| o.port == port) {
+            match &output.repeat {
+                None => total.push(output.expressions.len().to_string()),
+                Some(repeat) if guard_time_evaluable(repeat, &state) => total.push(format!(
+                    "({} * ({})) as usize",
+                    output.expressions.len(),
+                    emit_expr(repeat, &HashSet::new(), &HashSet::new())
+                )),
+                Some(_) => return None,
+            }
+        }
+        if !total.is_empty() {
+            counts.push(total.join(" + "));
+        }
+    }
+    counts
+        .into_iter()
+        .reduce(|acc, count| format!("core::cmp::max({acc}, {count})"))
+}
+
+struct Rates {
+    inputs: Vec<(String, String)>,
+    outputs: Vec<(String, Option<String>)>,
+    refresh_all: bool,
+}
+
+fn action_rates(action: &Action, state: &HashSet<String>, locals: &HashSet<String>) -> Rates {
+    let mut touched = BTreeSet::new();
+    stmt_ports(&action.stmts, &mut touched);
+
+    let mut inputs: BTreeMap<String, String> = BTreeMap::new();
+    for p in &action.input_patterns {
+        let count = pattern_token_count(p, state, locals);
+        inputs
+            .entry(p.port.clone())
+            .and_modify(|acc| *acc = format!("{acc} + {count}"))
+            .or_insert(count);
+    }
+
+    let empty = HashSet::new();
+    let mut outputs: BTreeMap<String, Option<Vec<String>>> = BTreeMap::new();
+    for output in &action.output_expressions {
+        let count = match &output.repeat {
+            None => Some(output.expressions.len().to_string()),
+            Some(repeat) if guard_time_evaluable(repeat, locals) => Some(format!(
+                "({} * ({})) as usize",
+                output.expressions.len(),
+                emit_expr(repeat, state, &empty)
+            )),
+            Some(_) => None,
+        };
+        let slot = outputs
+            .entry(output.port.clone())
+            .or_insert_with(|| Some(Vec::new()));
+        match (slot.as_mut(), count) {
+            (Some(sum), Some(count)) => sum.push(count),
+            _ => *slot = None,
+        }
+    }
+
+    Rates {
+        inputs: inputs.into_iter().collect(),
+        outputs: outputs
+            .into_iter()
+            .map(|(port, sum)| (port, sum.map(|parts| parts.join(" + "))))
+            .collect(),
+        refresh_all: !touched.is_empty(),
+    }
+}
+
 fn room_snapshots<'a>(actions: impl Iterator<Item = &'a Action>) -> String {
     let mut ports = BTreeSet::new();
     for action in actions {
@@ -373,46 +518,74 @@ fn room_snapshots<'a>(actions: impl Iterator<Item = &'a Action>) -> String {
     out
 }
 
-fn emit_fire(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
+fn emit_schedule(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
     let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
     let priorities = Priorities::new(actor);
 
-    let Some(fsm) = &actor.fsm else {
-        let candidates: Vec<&Action> = actor.actions.iter().collect();
-        let body: String = priorities
-            .order(actor, &candidates)
-            .into_iter()
-            .map(|i| emit_action(candidates[i], state, None, Commit::Fired))
-            .collect();
-        return format!("{}{body}", room_snapshots(actor.actions.iter()));
-    };
-
-    let mut states = BTreeSet::new();
-    for t in &fsm.transitions {
-        states.insert(t.state.clone());
-    }
-    let mut arms = String::new();
-    for s in &states {
-        let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
-            format!("self.state = {ty}State::{};", fsm_variant(next))
-        });
-        let mut tries = String::new();
-        for i in priorities.order(actor, &reachable) {
-            tries.push_str(&emit_action(
-                reachable[i],
-                state,
-                Some(&nexts[i]),
-                Commit::Fired,
-            ));
-        }
-        let _ = write!(
-            arms,
-            "            {ty}State::{} => {{\n{}{tries}\n            }}\n",
-            fsm_variant(s),
-            room_snapshots(reachable.into_iter())
+    let mut out = String::new();
+    for port in &actor.inports {
+        let _ = writeln!(
+            out,
+            "        let mut {} = {}.len();",
+            avail_counter(&port.name),
+            port_ref(&port.name)
         );
     }
-    format!("        match self.state {{\n{arms}        }}")
+    for port in &actor.outports {
+        let _ = writeln!(
+            out,
+            "        let mut {} = {}.room();",
+            room_snapshot(&port.name),
+            port_ref(&port.name)
+        );
+    }
+    out.push_str("        let mut __fired = 0usize;\n");
+    out.push_str("        '__sched: while __fired < FIRE_BUDGET {\n");
+
+    let body = match &actor.fsm {
+        None => {
+            let candidates: Vec<&Action> = actor.actions.iter().collect();
+            priorities
+                .order(actor, &candidates)
+                .into_iter()
+                .map(|i| emit_action(actor, candidates[i], state, None, Commit::Sched))
+                .collect()
+        }
+        Some(fsm) => {
+            let mut states = BTreeSet::new();
+            for t in &fsm.transitions {
+                states.insert(t.state.clone());
+            }
+            let mut arms = String::new();
+            for s in &states {
+                let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
+                    format!("self.state = {ty}State::{};", fsm_variant(next))
+                });
+                let mut tries = String::new();
+                for i in priorities.order(actor, &reachable) {
+                    tries.push_str(&emit_action(
+                        actor,
+                        reachable[i],
+                        state,
+                        Some(&nexts[i]),
+                        Commit::Sched,
+                    ));
+                }
+                let _ = write!(
+                    arms,
+                    "            {ty}State::{} => {{\n{tries}            }}\n",
+                    fsm_variant(s)
+                );
+            }
+            format!("        match self.state {{\n{arms}        }}\n")
+        }
+    };
+
+    out.push_str(&body);
+    out.push_str("            break;\n");
+    out.push_str("        }\n");
+    out.push_str("        __fired\n");
+    out
 }
 
 fn state_candidates<'a>(
@@ -451,9 +624,79 @@ fn pattern_token_count(
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Commit<'a> {
-    Fired,
     Fallthrough,
     Move(&'a str),
+    Sched,
+}
+
+fn count_binding(port: &str) -> String {
+    format!("__take_{}", port_field(port))
+}
+
+fn sched_tail(actor: &Actor, rates: &Rates) -> String {
+    let mut out = String::new();
+    if rates.refresh_all {
+        for port in &actor.inports {
+            let _ = writeln!(
+                out,
+                "            {} = {}.len();",
+                avail_counter(&port.name),
+                port_ref(&port.name)
+            );
+        }
+        for port in &actor.outports {
+            let _ = writeln!(
+                out,
+                "            {} = {}.room();",
+                room_snapshot(&port.name),
+                port_ref(&port.name)
+            );
+        }
+    } else {
+        for (port, _) in &rates.inputs {
+            let _ = writeln!(
+                out,
+                "            {} -= {};",
+                avail_counter(port),
+                count_binding(port)
+            );
+        }
+        for (port, count) in &rates.outputs {
+            if count.is_some() {
+                let _ = writeln!(
+                    out,
+                    "            {} -= {};",
+                    room_snapshot(port),
+                    count_binding(port)
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "            {} = {}.room();",
+                    room_snapshot(port),
+                    port_ref(port)
+                );
+            }
+        }
+    }
+    out.push_str("            __fired += 1;\n            continue '__sched;\n");
+    out
+}
+
+fn count_bindings(rates: &Rates) -> String {
+    if rates.refresh_all {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (port, count) in &rates.inputs {
+        let _ = writeln!(out, "            let {} = {count};", count_binding(port));
+    }
+    for (port, count) in &rates.outputs {
+        if let Some(count) = count {
+            let _ = writeln!(out, "            let {} = {count};", count_binding(port));
+        }
+    }
+    out
 }
 
 fn reads_tokens(expr: &Expr, tokens: &HashSet<String>) -> bool {
@@ -551,6 +794,7 @@ fn emit_peeks(action: &Action, state: &HashSet<String>, locals: &HashSet<String>
 }
 
 fn emit_action(
+    actor: &Actor,
     action: &Action,
     state: &HashSet<String>,
     fsm_next: Option<&str>,
@@ -571,11 +815,13 @@ fn emit_action(
     let consume = !action.guards.iter().any(|g| reads_tokens(g, &tokens));
 
     let body = emit_action_body(action, state, fsm_next, !consume);
+    let rates = (commit == Commit::Sched).then(|| action_rates(action, state, &locals));
     let tail = match commit {
-        Commit::Fired => "            return true;\n".to_string(),
         Commit::Fallthrough => String::new(),
         Commit::Move(next) => format!("            return ({next}(self.into_state()), true);\n"),
+        Commit::Sched => sched_tail(actor, rates.as_ref().expect("schedule needs rates")),
     };
+    let bindings = rates.as_ref().map(count_bindings).unwrap_or_default();
 
     let guard = if action.guards.is_empty() {
         None
@@ -590,21 +836,30 @@ fn emit_action(
         )
     };
 
-    let mut conds: Vec<String> = action
-        .input_patterns
-        .iter()
-        .map(|p| {
+    let mut conds: Vec<String> = Vec::new();
+    if let Some(rates) = &rates {
+        for (port, count) in &rates.inputs {
+            conds.push(format!("{} >= {count}", avail_counter(port)));
+        }
+        for (port, count) in &rates.outputs {
+            match count {
+                Some(count) => conds.push(format!("{} >= {count}", room_snapshot(port))),
+                None => conds.push(format!("{} >= 1", room_snapshot(port))),
+            }
+        }
+    } else {
+        conds.extend(action.input_patterns.iter().map(|p| {
             format!(
                 "{}.avail({})",
                 port_ref(&p.port),
                 pattern_token_count(p, state, &locals)
             )
-        })
-        .collect();
-    let mut produced = BTreeSet::new();
-    for output in &action.output_expressions {
-        if produced.insert(output.port.clone()) {
-            conds.push(room_snapshot(&output.port));
+        }));
+        let mut produced = BTreeSet::new();
+        for output in &action.output_expressions {
+            if produced.insert(output.port.clone()) {
+                conds.push(room_snapshot(&output.port));
+            }
         }
     }
     if consume && let Some(guard) = &guard {
@@ -612,16 +867,16 @@ fn emit_action(
     }
 
     if conds.is_empty() {
-        if action.vars.is_empty() {
+        if action.vars.is_empty() && bindings.is_empty() {
             return format!("{body}{tail}");
         }
-        return format!("        {{\n{body}{tail}        }}\n");
+        return format!("        {{\n{bindings}{body}{tail}        }}\n");
     }
     let avail = conds.join(" && ");
 
     if consume {
         let recvs = emit_recvs(action, state, &locals);
-        return format!("        if {avail} {{\n{recvs}{body}{tail}        }}\n");
+        return format!("        if {avail} {{\n{bindings}{recvs}{body}{tail}        }}\n");
     }
 
     let peeks = emit_peeks(action, state, &locals);
@@ -629,7 +884,7 @@ fn emit_action(
         Some(guard) => format!("if {guard} {{\n{body}{tail}            }}"),
         None => format!("{{\n{body}{tail}            }}"),
     };
-    format!("        if {avail} {{\n{peeks}            {guarded}\n        }}\n")
+    format!("        if {avail} {{\n{bindings}{peeks}            {guarded}\n        }}\n")
 }
 
 fn emit_action_body(

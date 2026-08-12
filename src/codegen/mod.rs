@@ -99,7 +99,7 @@ pub fn write_cargo_toml(
         }
         contents.push_str("\n[build-dependencies]\ncc = \"1\"\n");
     }
-    contents.push_str("\n[profile.release]\nlto = true\ncodegen-units = 1\n");
+    contents.push_str("\n[profile.release]\nlto = \"thin\"\npanic = \"abort\"\n");
     write_file(&out_dir.join("Cargo.toml"), &contents)
 }
 

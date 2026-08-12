@@ -4,8 +4,9 @@ use std::path::Path;
 
 use crate::ast::Actor;
 use crate::codegen::common::{
-    actor_mod, actor_port, actor_type, chan_credit, chan_rx, chan_tx, emit_actor,
-    emit_shared_decls, ident, inst_var, instance_args, out_port_ctor, rust_type,
+    CHAN_MOD, actor_mod, actor_port, actor_type, chan_credit, chan_rx, chan_tx, chan_use,
+    check_no_fanout, emit_actor, emit_chan_file, emit_shared_decls, ident, inst_var, instance_args,
+    out_port_ctor, output_burst, rust_type,
 };
 use crate::codegen::{CodeGenerator, Options, Program};
 use crate::network_ffi::ffi::Instance;
@@ -20,6 +21,7 @@ impl CodeGenerator for Tokio {
     }
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
+        check_no_fanout(program)?;
         let src_dir = out_dir.join("src");
         for (name, source) in emit_files(program, self.options, orcc) {
             let tokens = source.parse().map_err(|err| {
@@ -67,17 +69,29 @@ fn emit_files(program: &Program<'_>, options: Options, orcc: bool) -> Vec<(Strin
         files.push((format!("{}.rs", actor_mod(&actor.name)), src));
     }
 
+    files.push((
+        format!("{CHAN_MOD}.rs"),
+        emit_chan_file(
+            "use std::collections::VecDeque;\n",
+            options.cap,
+            &emit_ports(unbounded),
+        ),
+    ));
+
     let mut main = String::new();
     main.push_str("#![allow(warnings)]\n");
     main.push_str("use std::collections::VecDeque;\n\n");
+    main.push_str(&chan_use());
     for class in &classes {
         let actor = &program.actors[*class];
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    let _ = writeln!(main, "const CAP: usize = {};\n", options.cap);
-    main.push_str(&emit_ports(unbounded));
-    main.push('\n');
+    let _ = writeln!(
+        main,
+        "const FIRE_BUDGET: usize = {};\n",
+        options.fire_budget_literal()
+    );
     main.push_str(&emit_shared_decls(program, orcc));
     main.push_str(&emit_main(program, unbounded, orcc, typestate));
     files.push(("main.rs".to_string(), main));
@@ -124,6 +138,9 @@ impl<T: Clone> InPort<T> {
     pub fn new(credit: Credit) -> Self {
         Self { buf: VecDeque::new(), credit }
     }
+    pub fn len(&mut self) -> usize {
+        self.buf.len()
+    }
     pub fn avail(&mut self, n: usize) -> bool {
         self.buf.len() >= n
     }
@@ -150,7 +167,6 @@ impl<T: Clone> InPort<T> {
 pub enum Txs<T> {
     None,
     One(Tx<T>, Credit),
-    Many(Vec<(Tx<T>, Credit)>),
 }
 
 pub struct OutPort<T> {
@@ -169,21 +185,18 @@ impl<T: Clone> OutPort<T> {{
     pub fn one(target: (Tx<T>, Credit)) -> Self {{
         Self {{ txs: Txs::One(target.0, target.1), buf: VecDeque::new() }}
     }}
-    pub fn many(targets: Vec<(Tx<T>, Credit)>) -> Self {{
-        Self {{ txs: Txs::Many(targets), buf: VecDeque::new() }}
-    }}
-    pub fn has_room(&mut self) -> bool {{
+    pub fn room(&mut self) -> usize {{
         if CAP == 0 {{
-            return true;
+            return usize::MAX;
         }}
         let pending = self.buf.len();
         match &self.txs {{
-            Txs::None => true,
-            Txs::One(_, credit) => credit.load(CREDIT_ORDER) + pending < CAP,
-            Txs::Many(targets) => targets
-                .iter()
-                .all(|(_, credit)| credit.load(CREDIT_ORDER) + pending < CAP),
+            Txs::None => usize::MAX,
+            Txs::One(_, credit) => CAP.saturating_sub(credit.load(CREDIT_ORDER) + pending),
         }}
+    }}
+    pub fn has_room(&mut self) -> bool {{
+        self.room() > 0
     }}
     pub fn push_back(&mut self, value: T) {{
         self.buf.push_back(value);
@@ -192,24 +205,13 @@ impl<T: Clone> OutPort<T> {{
         if self.buf.is_empty() {{
             return;
         }}
-        let mut chunk: Vec<T> = self.buf.drain(..).collect();
+        let chunk: Vec<T> = self.buf.drain(..).collect();
         let tokens = chunk.len();
         match &self.txs {{
             Txs::None => {{}}
             Txs::One(tx, credit) => {{
                 credit.fetch_add(tokens, CREDIT_ORDER);
                 let _ = tx.send(chunk){send_await};
-            }}
-            Txs::Many(targets) => {{
-                for (i, (tx, credit)) in targets.iter().enumerate() {{
-                    let payload = if i + 1 == targets.len() {{
-                        core::mem::take(&mut chunk)
-                    }} else {{
-                        chunk.clone()
-                    }};
-                    credit.fetch_add(tokens, CREDIT_ORDER);
-                    let _ = tx.send(payload){send_await};
-                }}
             }}
         }}
     }}
@@ -239,10 +241,11 @@ fn emit_room_probe(actor: &Actor, typestate: bool) -> Option<String> {
             .outports
             .iter()
             .map(|p| {
-                format!(
-                    "{}.has_room()",
-                    actor_port(actor, typestate, "__actor", &p.name)
-                )
+                let port = actor_port(actor, typestate, "__actor", &p.name);
+                match output_burst(actor, &p.name) {
+                    Some(burst) => format!("{port}.room() >= {burst}"),
+                    None => format!("{port}.has_room()"),
+                }
             })
             .collect::<Vec<_>>()
             .join(" && "),
@@ -274,25 +277,29 @@ fn emit_task_run(actor: &Actor, typestate: bool) -> String {
         body.push_str(&flush);
     }
 
+    let drain = format!(
+        "loop {{\n    let __n = __actor.schedule();\n{flush}    if __n == 0 {{ break; }}\n}}\n"
+    );
+
     let room = emit_room_probe(actor, typestate);
     let await_room = room.as_ref().map_or_else(String::new, |expr| {
         format!(
-            "if !({expr}) {{ tokio::task::yield_now().await; continue; }}\nif __actor.fire() {{\n{flush}continue;\n}}\n"
+            "if !({expr}) {{ tokio::task::yield_now().await; continue; }}\nlet __n = __actor.schedule();\n{flush}if __n > 0 {{ continue; }}\n"
         )
     });
 
     if actor.inports.is_empty() {
         if room.is_none() {
-            let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
+            body.push_str(&drain);
         } else {
             body.push_str("loop {\n");
-            let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
+            body.push_str(&drain);
             body.push_str(&await_room);
             body.push_str("break;\n}\n");
         }
     } else {
         body.push_str("loop {\n");
-        let _ = writeln!(body, "while __actor.fire() {{\n{flush}}}");
+        body.push_str(&drain);
         let all_closed = actor
             .inports
             .iter()

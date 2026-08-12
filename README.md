@@ -49,24 +49,18 @@ files.
 | `--backend <B>` | `naive` | `naive`, `threads`, `rayon` or `tokio` |
 | `--native-dir <DIR>` | see below | Directory of `@native` C or C++ sources |
 | `--cap <N>` | `1024` | Channel capacity in tokens; `0` means unbounded |
-| `--fire-budget <N>` | `1024` | Max consecutive firings per actor visit; `0` means unlimited |
+| `--fire-budget <N>` | `1024` | Max consecutive firings per `schedule()` call; `0` means unlimited |
 | `--orcc` | off | Emit the orcc compatibility layer |
 | `--typestate` | off | Lift FSM state into type parameters |
 
-`--cap` is denominated in tokens for every backend, so it is directly comparable with
-DCG's `-s`. `--fire-budget` only affects `threads` and `rayon`, which are the backends
-that loop on one actor before moving on; it bounds how long one actor can monopolise a
-worker.
-
 ## Backends
 
-| Backend | Model | Channels |
-| --- | --- | --- |
-| `naive` | Single-threaded round-robin over all actors | `Rc<RefCell<VecDeque>>` |
-| `threads` | N OS threads contending for `Mutex`-guarded actors (DCG's architecture) | crossbeam |
-| `rayon` | Bulk-synchronous parallel: one `rayon::scope` superstep per round | crossbeam |
-| `tokio` | One async task per actor, chunked sends with credit-based backpressure | `tokio::mpsc` |
-
+| Backend | Model | Channels (`--cap > 0`) | Channels (`--cap 0`) |
+| --- | --- | --- | --- |
+| `naive` | Single-threaded round-robin over all actors | `Rc` ring of `Cell` slots | `Rc<RefCell<VecDeque>>` |
+| `threads` | N OS threads contending for `Mutex`-guarded actors (DCG's architecture) | lock-free SPSC ring | crossbeam |
+| `rayon` | Bulk-synchronous parallel: one `rayon::scope` superstep per round | lock-free SPSC ring | crossbeam |
+| `tokio` | One async task per actor, chunked sends with credit-based backpressure | `tokio::mpsc` | `tokio::mpsc` |
 
 ## Generated projects
 
@@ -74,47 +68,26 @@ The output directory is an ordinary Cargo project:
 
 ```
 out/
-  Cargo.toml          release profile: lto = true, codegen-units = 1
+  Cargo.toml          release profile: lto = "thin", panic = "abort"
   build.rs            only when the network uses @native C
   native/             copies of the @native C sources
   src/
     main.rs           channels, actor instances, scheduler, shared constants
+    chan.rs           channel and port types, plus the CAP constant
     m_<actor>.rs      one module per actor class
 ```
 
-Actors become plain structs with a `fire()` method that attempts each action in
-declaration order - respecting any CAL `priority` block via a stable topological sort -
-and returns whether it fired.
-
-### Native C functions
-
-CAL `@native` functions are compiled and linked automatically. `crt` looks in
-`--native-dir`, falling back to `<SOURCE_DIR>/../lib/native`, copies what it finds into
-`out/native/`, emits a `build.rs` driving the `cc` crate, and declares the functions
-`extern "C"` with safe wrappers.
-
-### `--orcc`
-
-Networks written for orcc expect a `-i input -w output` CLI and a global `opt` struct.
-`--orcc` emits `options.h`, the `OrccOptions` glue and a `clap` front end providing
-those flags. Networks such as ZigBee need it.
-
-### `--typestate`
-
-`--typestate` lifts an actor's FSM state into a type parameter - `Actor<St_Idle>` with a
-per-state `impl` block and a wrapper enum - so illegal state/action pairs stop
-compiling instead of being rejected at runtime.
-
 ## Experiments
 
-`experiments/` holds one script per network, all built on `experiments/common.sh`.
-Each generates, builds and exercises six variants: the four backends plus
-`--typestate` on `naive` and `tokio`.
+`experiments/` holds one self-contained script per network - no shared library, each
+runs on its own. Each generates, builds and exercises eight variants: the four backends,
+each with and without `--typestate`.
 
-Only `zigbee.sh` and `generated.sh` are benchmarks - their networks have an `exit()`
-native and therefore terminate. `zigbee.sh` verifies every variant against
-`lib/reference_output/tx_stream.out` before benchmarking. The remaining eleven scripts
-cover `orc-apps` networks that never terminate, so they generate, build, and sample each
+`zigbee.sh`, `balanced.sh`, `wide.sh` and `pipeline.sh` are the benchmarks - their
+networks have an `exit()` native and therefore terminate. `zigbee.sh` verifies every
+variant against `lib/reference_output/tx_stream.out` before benchmarking. `scaling.sh`
+sweeps those networks over core counts with `taskset`. `build-checks.sh` covers eleven
+`orc-apps` networks that never terminate, so it generates, builds, and samples each
 variant under a timeout as a codegen regression check.
 
 `CAP` and `FIRE_BUDGET` are environment overrides, and `CAP` is also passed to DCG's

@@ -2,21 +2,19 @@
 
 set -euo pipefail
 
+NET=balanced
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CRT=$ROOT/target/release/crt
 BACKENDS=(naive threads rayon tokio)
 VARIANTS=("${BACKENDS[@]}" "${BACKENDS[@]/#/ts-}")
 CAP=${CAP:-1024}
 FIRE_BUDGET=${FIRE_BUDGET:-1024}
-REPEAT=${ZIGBEE_REPEAT:-100}
 
-XDF=custom-networks/ZigBee/src/multitoken_tx/Top_ZigBee_tx.xdf
-SRC=custom-networks/ZigBee/src
-NATIVE=custom-networks/ZigBee/lib/native/linux.c
-INPUT=custom-networks/ZigBee/lib/input_signals/tx_stream.in
-REFERENCE=custom-networks/ZigBee/lib/reference_output/tx_stream.out
-BIN=top_zigbee_tx
-WORK=/tmp/crt-zigbee
+XDF=custom-networks/$NET/xdf/gen.xdf
+SRC=custom-networks/$NET
+NATIVE=custom-networks/$NET/native_rnd.c
+BIN=gen
+WORK=/tmp/crt-$NET
 
 cd "$ROOT"
 
@@ -28,17 +26,13 @@ note() {
 	printf '    %s\n' "$*"
 }
 
-normalize() {
-	sed 's/^[[:space:]]*//' "$1"
-}
-
 say "building crt"
 cargo build --release --quiet
 
 rm -rf "$WORK"
 mkdir -p "$WORK/cpp"
 
-say "ZigBee: crt codegen + build (--orcc)"
+say "$NET: crt codegen + build"
 for variant in "${VARIANTS[@]}"; do
 	backend=$variant
 	flags=()
@@ -52,14 +46,14 @@ for variant in "${VARIANTS[@]}"; do
 		--backend "$backend" \
 		--cap "$CAP" \
 		--fire-budget "$FIRE_BUDGET" \
-		--orcc \
+		--native-dir "$SRC" \
 		"${flags[@]}" >/dev/null
 	cargo build --release --quiet --manifest-path "$WORK/$variant/Cargo.toml"
 done
 
-say "ZigBee: DCG codegen + build"
+say "$NET: DCG codegen + build"
 Dataflow_Code_Generator -d "$SRC" -n "$XDF" -w "$WORK/cpp" \
-	-s "$CAP" -c "$(nproc)" --opt_sched --silent --orcc
+	-s "$CAP" -c "$(nproc)" --opt_sched --silent
 gcc -O3 -std=gnu11 -x c -I"$WORK/cpp" -c "$NATIVE" -o "$WORK/cpp/native.o"
 g++ -O3 -std=c++11 -Wno-narrowing -I. -c "$WORK/cpp/main.cpp" -o "$WORK/cpp/main.o"
 objs=("$WORK/cpp/main.o" "$WORK/cpp/native.o")
@@ -76,33 +70,22 @@ for variant in "${VARIANTS[@]}"; do
 done
 ORDER=("${VARIANTS[@]/#/crt-}" dcg-cpp)
 
-say "ZigBee: correctness against reference output (1x input)"
-normalize "$REFERENCE" >"$WORK/reference.norm"
-failed=()
+say "$NET: termination check"
+note "this network has no reference output; test_exit_rnd() calls exit(0), so the"
+note "check is that every variant reaches it instead of hanging or crashing"
 for name in "${ORDER[@]}"; do
-	"${RUNNER[$name]}" -i "$INPUT" -w "$WORK/$name.out" || true
-	normalize "$WORK/$name.out" >"$WORK/$name.norm"
-	if cmp -s "$WORK/$name.norm" "$WORK/reference.norm"; then
-		note "$name: matches reference"
+	if timeout 900 "${RUNNER[$name]}" >/dev/null 2>&1; then
+		note "$name: exited 0"
 	else
-		failed+=("$name")
-		note "$name: MISMATCH ($(wc -l <"$WORK/$name.norm") of $(wc -l <"$WORK/reference.norm") lines)"
+		note "$name: FAILED (exit $?)"
 	fi
 done
-if [ ${#failed[@]} -eq 0 ]; then
-	note "all variants match the reference"
-else
-	note "mismatching variants: ${failed[*]}"
-	note "This is not an error, the ZigBee network has an inherent race between exit() and writing the last samples"
-fi
 
-say "ZigBee: benchmark (${REPEAT}x input)"
-for _ in $(seq "$REPEAT"); do cat "$INPUT"; done >"$WORK/big.in"
-
+say "$NET: benchmark"
 args=()
 for name in "${ORDER[@]}"; do
-	args+=(-n "$name" "${RUNNER[$name]} -i $WORK/big.in -w $WORK/bench.out")
+	args+=(-n "$name" "${RUNNER[$name]}")
 done
-hyperfine --warmup 3 -N "${args[@]}"
+hyperfine --warmup 1 --runs 5 -N "${args[@]}"
 
 rm -rf "$WORK"

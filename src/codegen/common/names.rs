@@ -63,6 +63,6 @@ pub fn out_port_ctor(targets: &[String]) -> String {
     match targets {
         [] => "OutPort::none()".to_string(),
         [target] => format!("OutPort::one({target})"),
-        _ => format!("OutPort::many(vec![{}])", targets.join(", ")),
+        _ => unreachable!("fan-out output ports are rejected by check_no_fanout"),
     }
 }

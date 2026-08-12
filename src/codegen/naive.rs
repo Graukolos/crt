@@ -3,7 +3,9 @@ use std::io;
 use std::path::Path;
 
 use crate::codegen::common::{
-    Channels, actor_mod, emit_actor, emit_main_prelude, emit_shared_decls, inst_var,
+    CHAN_MOD, Channels, actor_mod, chan_use, channel_types, check_no_fanout, emit_actor,
+    emit_chan_file, emit_main_prelude, emit_shared_decls, inst_var, local_chan_imports,
+    local_ports,
 };
 use crate::codegen::{CodeGenerator, Options, Program};
 
@@ -11,74 +13,13 @@ pub struct Naive {
     pub options: Options,
 }
 
-const PORTS_RS: &str = r"pub struct InPort<T> {
-    chan: Rc<RefCell<VecDeque<T>>>,
-}
-
-impl<T: Clone> InPort<T> {
-    pub fn new(chan: Rc<RefCell<VecDeque<T>>>) -> Self {
-        Self { chan }
-    }
-    pub fn avail(&mut self, n: usize) -> bool {
-        self.chan.borrow().len() >= n
-    }
-    pub fn peek(&self, i: usize) -> T {
-        self.chan.borrow()[i].clone()
-    }
-    pub fn recv(&mut self) -> T {
-        self.chan.borrow_mut().pop_front().unwrap()
-    }
-    pub fn pop_front(&mut self) -> Option<T> {
-        self.chan.borrow_mut().pop_front()
-    }
-}
-
-pub enum OutPort<T> {
-    None,
-    One(Rc<RefCell<VecDeque<T>>>),
-    Many(Vec<Rc<RefCell<VecDeque<T>>>>),
-}
-
-impl<T: Clone> OutPort<T> {
-    pub fn none() -> Self {
-        Self::None
-    }
-    pub fn one(target: Rc<RefCell<VecDeque<T>>>) -> Self {
-        Self::One(target)
-    }
-    pub fn many(targets: Vec<Rc<RefCell<VecDeque<T>>>>) -> Self {
-        Self::Many(targets)
-    }
-    pub fn has_room(&mut self) -> bool {
-        if CAP == 0 {
-            return true;
-        }
-        match self {
-            Self::None => true,
-            Self::One(target) => target.borrow().len() < CAP,
-            Self::Many(targets) => targets.iter().all(|t| t.borrow().len() < CAP),
-        }
-    }
-    pub fn push_back(&mut self, value: T) {
-        match self {
-            Self::None => {}
-            Self::One(target) => target.borrow_mut().push_back(value),
-            Self::Many(targets) => {
-                for target in targets {
-                    target.borrow_mut().push_back(value.clone());
-                }
-            }
-        }
-    }
-}
-";
-
 impl CodeGenerator for Naive {
     fn name(&self) -> &'static str {
         "naive"
     }
 
     fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
+        check_no_fanout(program)?;
         let src_dir = out_dir.join("src");
         for (name, source) in emit_files(program, self.options, orcc) {
             let tokens = source.parse().map_err(|err| {
@@ -121,19 +62,30 @@ fn emit_files(program: &Program<'_>, options: Options, orcc: bool) -> Vec<(Strin
         files.push((format!("{}.rs", actor_mod(&actor.name)), src));
     }
 
+    files.push((
+        format!("{CHAN_MOD}.rs"),
+        emit_chan_file(
+            local_chan_imports(options.cap),
+            options.cap,
+            &local_ports(options.cap, &channel_types(program)),
+        ),
+    ));
+
     let mut main = String::new();
     main.push_str("#![allow(warnings)]\n");
-    main.push_str("use std::cell::RefCell;\n");
     main.push_str("use std::collections::VecDeque;\n");
     main.push_str("use std::rc::Rc;\n\n");
+    main.push_str(&chan_use());
     for class in &classes {
         let actor = &program.actors[*class];
         let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
     }
     main.push('\n');
-    let _ = writeln!(main, "const CAP: usize = {};\n", options.cap);
-    main.push_str(PORTS_RS);
-    main.push('\n');
+    let _ = writeln!(
+        main,
+        "const FIRE_BUDGET: usize = {};\n",
+        options.fire_budget_literal()
+    );
     main.push_str(&emit_shared_decls(program, orcc));
     main.push_str(&emit_main(program, orcc, typestate));
     files.push(("main.rs".to_string(), main));
@@ -146,7 +98,7 @@ fn emit_main(program: &Program<'_>, orcc: bool, typestate: bool) -> String {
 
     out.push_str("    loop {\n");
     for inst in &instances {
-        let _ = writeln!(out, "        {}.fire();", inst_var(&inst.id));
+        let _ = writeln!(out, "        {}.schedule();", inst_var(&inst.id));
     }
     out.push_str("    }\n}\n");
     out

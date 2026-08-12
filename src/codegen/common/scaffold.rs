@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::Actor;
@@ -13,7 +13,106 @@ use super::{
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Channels {
     Local,
+    Spsc,
     Crossbeam,
+}
+
+impl Channels {
+    fn handle(self) -> &'static str {
+        match self {
+            Channels::Local => "Rc",
+            Channels::Spsc => "std::sync::Arc",
+            Channels::Crossbeam => unreachable!("crossbeam channels are not ring-backed"),
+        }
+    }
+}
+
+pub fn channel_types(program: &Program<'_>) -> BTreeSet<String> {
+    program
+        .network
+        .instances
+        .iter()
+        .filter(|i| program.actors.contains_key(&i.class_name))
+        .flat_map(|i| program.actors[&i.class_name].inports.iter())
+        .map(|port| rust_type(&port.typ))
+        .collect()
+}
+
+pub fn check_no_fanout(program: &Program<'_>) -> std::io::Result<()> {
+    let instances: Vec<&Instance> = program
+        .network
+        .instances
+        .iter()
+        .filter(|i| program.actors.contains_key(&i.class_name))
+        .collect();
+    let known: HashSet<(&str, &str)> = instances
+        .iter()
+        .flat_map(|i| {
+            program.actors[&i.class_name]
+                .inports
+                .iter()
+                .map(move |port| (i.id.as_str(), port.name.as_str()))
+        })
+        .collect();
+
+    let mut offenders = Vec::new();
+    for inst in &instances {
+        for port in &program.actors[&inst.class_name].outports {
+            let targets: Vec<String> = program
+                .network
+                .edges
+                .iter()
+                .filter(|e| e.src_id == inst.id && e.src_port == port.name)
+                .filter(|e| known.contains(&(e.dst_id.as_str(), e.dst_port.as_str())))
+                .map(|e| format!("{}.{}", e.dst_id, e.dst_port))
+                .collect();
+            if targets.len() > 1 {
+                offenders.push(format!(
+                    "{}.{} -> {}",
+                    inst.id,
+                    port.name,
+                    targets.join(", ")
+                ));
+            }
+        }
+    }
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "output port(s) feeding more than one destination, which the ports \
+             cannot represent: {}",
+            offenders.join("; ")
+        ),
+    ))
+}
+
+pub fn check_single_producer(program: &Program<'_>) -> std::io::Result<()> {
+    let mut producers: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    for edge in &program.network.edges {
+        producers
+            .entry((edge.dst_id.as_str(), edge.dst_port.as_str()))
+            .or_default()
+            .push(edge.src_id.as_str());
+    }
+    let offenders: Vec<String> = producers
+        .iter()
+        .filter(|(_, srcs)| srcs.len() > 1)
+        .map(|((id, port), srcs)| format!("{id}.{port} <- {}", srcs.join(", ")))
+        .collect();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "input port(s) fed by more than one connection, which the lock-free \
+             channels cannot represent: {}",
+            offenders.join("; ")
+        ),
+    ))
 }
 
 pub fn emit_shared_decls(program: &Program<'_>, orcc: bool) -> String {
@@ -140,11 +239,12 @@ fn emit_channels(program: &Program<'_>, instances: &[&Instance], channels: Chann
         for port in &actor.inports {
             let ty = rust_type(&port.typ);
             match channels {
-                Channels::Local => {
+                Channels::Local | Channels::Spsc => {
                     let _ = writeln!(
                         out,
-                        "    let {} = Rc::new(RefCell::new(VecDeque::<{ty}>::new()));",
-                        chan_var(&inst.id, &port.name)
+                        "    let {} = {}::new(Chan::<{ty}>::new());",
+                        chan_var(&inst.id, &port.name),
+                        channels.handle()
                     );
                 }
                 Channels::Crossbeam => {
@@ -181,7 +281,9 @@ fn port_args(
     let mut args = Vec::new();
     for port in &actor.inports {
         let source = match channels {
-            Channels::Local => format!("{}.clone()", chan_var(&inst.id, &port.name)),
+            Channels::Local | Channels::Spsc => {
+                format!("{}.clone()", chan_var(&inst.id, &port.name))
+            }
             Channels::Crossbeam => chan_rx(&inst.id, &port.name),
         };
         args.push(format!("InPort::new({source})"));
@@ -194,7 +296,9 @@ fn port_args(
             .filter(|e| e.src_id == inst.id && e.src_port == port.name)
             .filter(|e| known.contains(&(e.dst_id.as_str(), e.dst_port.as_str())))
             .map(|e| match channels {
-                Channels::Local => format!("{}.clone()", chan_var(&e.dst_id, &e.dst_port)),
+                Channels::Local | Channels::Spsc => {
+                    format!("{}.clone()", chan_var(&e.dst_id, &e.dst_port))
+                }
                 Channels::Crossbeam => format!("{}.clone()", chan_tx(&e.dst_id, &e.dst_port)),
             })
             .collect();
