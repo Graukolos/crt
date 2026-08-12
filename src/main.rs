@@ -25,7 +25,7 @@ struct Cli {
     backend: Backend,
     #[arg(long)]
     native_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, default_value_t = 1024, value_parser = parse_cap)]
     cap: usize,
     #[arg(long, default_value_t = 1024)]
     fire_budget: usize,
@@ -33,6 +33,14 @@ struct Cli {
     orcc: bool,
     #[arg(long)]
     typestate: bool,
+}
+
+fn parse_cap(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) => Err("channel capacity must be at least 1".to_string()),
+        Ok(cap) => Ok(cap),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 fn main() -> Result<()> {
@@ -99,11 +107,12 @@ fn main() -> Result<()> {
         }
     }
 
-    let generator = args.backend.generator(codegen::Options {
+    let options = codegen::Options {
         cap: args.cap,
         fire_budget: args.fire_budget,
         typestate: args.typestate,
-    });
+        orcc: args.orcc,
+    };
 
     let native_dir = args.native_dir.or_else(|| {
         let convention = args.source_dir.join("..").join("lib").join("native");
@@ -127,10 +136,10 @@ fn main() -> Result<()> {
         units: &units,
         native_sources: &native_sources,
     };
-    generator.generate(&program, &args.out, args.orcc)?;
+    codegen::generate(args.backend, &program, &args.out, options)?;
     eprintln!(
         "generated {} program for network '{}' in {}",
-        generator.name(),
+        args.backend.name(),
         network.name,
         args.out.display(),
     );

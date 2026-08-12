@@ -2,30 +2,13 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::Actor;
-use crate::codegen::Program;
+use crate::codegen::{Options, Program};
 use crate::network_ffi::ffi::Instance;
 
 use super::{
-    actor_mod, actor_type, chan_rx, chan_tx, chan_var, default_value, emit_const, emit_expr,
-    emit_function, emit_natives, emit_procedure, inst_var, out_port_ctor, param_value, rust_type,
+    actor_mod, actor_type, chan_var, default_value, emit_const, emit_const_expr, emit_function,
+    emit_natives, emit_procedure, inst_var, out_port_ctor, param_value, rust_type,
 };
-
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub enum Channels {
-    Local,
-    Spsc,
-    Crossbeam,
-}
-
-impl Channels {
-    fn handle(self) -> &'static str {
-        match self {
-            Channels::Local => "Rc",
-            Channels::Spsc => "std::sync::Arc",
-            Channels::Crossbeam => unreachable!("crossbeam channels are not ring-backed"),
-        }
-    }
-}
 
 pub fn channel_types(program: &Program<'_>) -> BTreeSet<String> {
     program
@@ -38,14 +21,20 @@ pub fn channel_types(program: &Program<'_>) -> BTreeSet<String> {
         .collect()
 }
 
-pub fn check_no_fanout(program: &Program<'_>) -> std::io::Result<()> {
-    let instances: Vec<&Instance> = program
+pub fn live_instances<'a>(program: &Program<'a>) -> Vec<&'a Instance> {
+    program
         .network
         .instances
         .iter()
         .filter(|i| program.actors.contains_key(&i.class_name))
-        .collect();
-    let known: HashSet<(&str, &str)> = instances
+        .collect()
+}
+
+pub fn live_inports<'a>(
+    program: &Program<'a>,
+    instances: &[&'a Instance],
+) -> HashSet<(&'a str, &'a str)> {
+    instances
         .iter()
         .flat_map(|i| {
             program.actors[&i.class_name]
@@ -53,7 +42,12 @@ pub fn check_no_fanout(program: &Program<'_>) -> std::io::Result<()> {
                 .iter()
                 .map(move |port| (i.id.as_str(), port.name.as_str()))
         })
-        .collect();
+        .collect()
+}
+
+pub fn check_no_fanout(program: &Program<'_>) -> std::io::Result<()> {
+    let instances = live_instances(program);
+    let known = live_inports(program, &instances);
 
     let mut offenders = Vec::new();
     for inst in &instances {
@@ -115,7 +109,7 @@ pub fn check_single_producer(program: &Program<'_>) -> std::io::Result<()> {
     ))
 }
 
-pub fn emit_shared_decls(program: &Program<'_>, orcc: bool) -> String {
+pub fn emit_shared_decls(program: &Program<'_>, options: Options) -> String {
     let mut out = String::new();
 
     let mut consts = String::new();
@@ -130,7 +124,7 @@ pub fn emit_shared_decls(program: &Program<'_>, orcc: bool) -> String {
     }
 
     if program.has_natives() {
-        out.push_str(&emit_natives(program, orcc));
+        out.push_str(&emit_natives(program, options.orcc));
         out.push('\n');
     }
 
@@ -177,7 +171,7 @@ pub fn instance_args(inst: &Instance, actor: &Actor) -> String {
             match value {
                 Some(param) => param_value(&p.typ, &param.value),
                 None => match &p.default {
-                    Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
+                    Some(expr) => emit_const_expr(expr),
                     None => default_value(&p.typ),
                 },
             }
@@ -188,36 +182,31 @@ pub fn instance_args(inst: &Instance, actor: &Actor) -> String {
 
 pub fn emit_main_prelude<'a>(
     program: &Program<'a>,
-    orcc: bool,
-    channels: Channels,
-    typestate: bool,
+    options: Options,
+    handle: &str,
 ) -> (Vec<&'a Instance>, String) {
-    let network = program.network;
-    let instances: Vec<&Instance> = network
-        .instances
-        .iter()
-        .filter(|i| program.actors.contains_key(&i.class_name))
-        .collect();
+    let instances = live_instances(program);
+    let known = live_inports(program, &instances);
 
     let mut out = String::from("fn main() {\n");
 
-    if program.has_natives() && orcc {
+    if program.has_natives() && options.orcc {
         out.push_str(crate::codegen::orcc::MAIN_SETUP);
     }
 
-    out.push_str(&emit_channels(program, &instances, channels));
+    out.push_str(&emit_channels(program, &instances, handle));
 
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
         let mut args = vec![instance_args(inst, actor)];
         args.retain(|a| !a.is_empty());
-        args.push(port_args(program, &instances, inst, actor, channels));
+        args.push(port_args(program, &known, inst, actor));
         let _ = writeln!(
             out,
             "    let mut {} = {}::{}::new({});",
             inst_var(&inst.id),
             actor_mod(&actor.name),
-            actor_type(actor, typestate),
+            actor_type(actor, options.typestate),
             args.join(", ")
         );
     }
@@ -232,30 +221,17 @@ pub fn emit_main_prelude<'a>(
     (instances, out)
 }
 
-fn emit_channels(program: &Program<'_>, instances: &[&Instance], channels: Channels) -> String {
+fn emit_channels(program: &Program<'_>, instances: &[&Instance], handle: &str) -> String {
     let mut out = String::new();
     for inst in instances {
         let actor = &program.actors[&inst.class_name];
         for port in &actor.inports {
             let ty = rust_type(&port.typ);
-            match channels {
-                Channels::Local | Channels::Spsc => {
-                    let _ = writeln!(
-                        out,
-                        "    let {} = {}::new(Chan::<{ty}>::new());",
-                        chan_var(&inst.id, &port.name),
-                        channels.handle()
-                    );
-                }
-                Channels::Crossbeam => {
-                    let _ = writeln!(
-                        out,
-                        "    let ({}, {}) = if CAP == 0 {{ crossbeam_channel::unbounded::<{ty}>() }} else {{ crossbeam_channel::bounded::<{ty}>(CAP) }};",
-                        chan_tx(&inst.id, &port.name),
-                        chan_rx(&inst.id, &port.name)
-                    );
-                }
-            }
+            let _ = writeln!(
+                out,
+                "    let {} = {handle}::new(Chan::<{ty}>::new());",
+                chan_var(&inst.id, &port.name),
+            );
         }
     }
     out
@@ -263,30 +239,16 @@ fn emit_channels(program: &Program<'_>, instances: &[&Instance], channels: Chann
 
 fn port_args(
     program: &Program<'_>,
-    instances: &[&Instance],
+    known: &HashSet<(&str, &str)>,
     inst: &Instance,
     actor: &Actor,
-    channels: Channels,
 ) -> String {
-    let known: HashSet<(&str, &str)> = instances
-        .iter()
-        .flat_map(|i| {
-            program.actors[&i.class_name]
-                .inports
-                .iter()
-                .map(move |port| (i.id.as_str(), port.name.as_str()))
-        })
-        .collect();
-
     let mut args = Vec::new();
     for port in &actor.inports {
-        let source = match channels {
-            Channels::Local | Channels::Spsc => {
-                format!("{}.clone()", chan_var(&inst.id, &port.name))
-            }
-            Channels::Crossbeam => chan_rx(&inst.id, &port.name),
-        };
-        args.push(format!("InPort::new({source})"));
+        args.push(format!(
+            "InPort::new({}.clone())",
+            chan_var(&inst.id, &port.name)
+        ));
     }
     for port in &actor.outports {
         let targets: Vec<String> = program
@@ -295,12 +257,7 @@ fn port_args(
             .iter()
             .filter(|e| e.src_id == inst.id && e.src_port == port.name)
             .filter(|e| known.contains(&(e.dst_id.as_str(), e.dst_port.as_str())))
-            .map(|e| match channels {
-                Channels::Local | Channels::Spsc => {
-                    format!("{}.clone()", chan_var(&e.dst_id, &e.dst_port))
-                }
-                Channels::Crossbeam => format!("{}.clone()", chan_tx(&e.dst_id, &e.dst_port)),
-            })
+            .map(|e| format!("{}.clone()", chan_var(&e.dst_id, &e.dst_port)))
             .collect();
         args.push(out_port_ctor(&targets));
     }

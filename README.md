@@ -47,20 +47,20 @@ files.
 | --- | --- | --- |
 | `--out <DIR>` | `generated` | Where to write the Cargo project |
 | `--backend <B>` | `naive` | `naive`, `threads`, `rayon` or `tokio` |
-| `--native-dir <DIR>` | see below | Directory of `@native` C or C++ sources |
-| `--cap <N>` | `1024` | Channel capacity in tokens; `0` means unbounded |
+| `--native-dir <DIR>` | `../lib/native` | Directory of `@native` C or C++ sources |
+| `--cap <N>` | `1024` | Channel capacity in tokens; must be at least 1 |
 | `--fire-budget <N>` | `1024` | Max consecutive firings per `schedule()` call; `0` means unlimited |
-| `--orcc` | off | Emit the orcc compatibility layer |
-| `--typestate` | off | Lift FSM state into type parameters |
+| `--orcc` | `false` | Emit the orcc compatibility layer |
+| `--typestate` | `false` | Lift FSM state into type parameters |
 
 ## Backends
 
-| Backend | Model | Channels (`--cap > 0`) | Channels (`--cap 0`) |
-| --- | --- | --- | --- |
-| `naive` | Single-threaded round-robin over all actors | `Rc` ring of `Cell` slots | `Rc<RefCell<VecDeque>>` |
-| `threads` | N OS threads contending for `Mutex`-guarded actors (DCG's architecture) | lock-free SPSC ring | crossbeam |
-| `rayon` | Bulk-synchronous parallel: one `rayon::scope` superstep per round | lock-free SPSC ring | crossbeam |
-| `tokio` | One async task per actor, chunked sends with credit-based backpressure | `tokio::mpsc` | `tokio::mpsc` |
+| Backend | Model | Channels |
+| --- | --- | --- |
+| `naive` | Single-threaded round-robin over all actors | `Rc` ring of `Cell` slots |
+| `threads` | N OS threads contending for `Mutex`-guarded actors (DCG's architecture) | lock-free SPSC ring |
+| `rayon` | Bulk-synchronous parallel: one `rayon::scope` superstep per round | lock-free SPSC ring |
+| `tokio` | One async task per actor, chunked sends with credit-based backpressure | `tokio::mpsc` |
 
 ## Generated projects
 

@@ -3,7 +3,11 @@ use std::fmt::Write as _;
 
 use crate::ast::{Expr, Generator, Stmt, VarDef};
 
-use super::{fsm_variant, ident, port_ref, rust_type, type_ident, var_default, var_rust_type};
+use super::{fsm_variant, ident, port_ref, rust_type, var_default, var_rust_type};
+
+pub fn emit_const_expr(expr: &Expr) -> String {
+    emit_expr(expr, &HashSet::new(), &HashSet::new())
+}
 
 pub fn emit_function(f: &crate::ast::Function) -> String {
     let params = f
@@ -257,7 +261,7 @@ pub fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>)
             base
         }
         Expr::FsmEnumElement { enum_name, element } => {
-            format!("{}::{}", type_ident(enum_name), fsm_variant(element))
+            format!("{}::{}", ident(enum_name), fsm_variant(element))
         }
         Expr::PortPreview { port, index, .. } => match index {
             Some(index) => format!(

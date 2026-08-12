@@ -15,6 +15,10 @@ use clap::ValueEnum;
 use proc_macro2::TokenStream;
 
 use crate::ast::{Actor, NativeFunction, NativeProcedure, Unit};
+use crate::codegen::common::{
+    CHAN_MOD, actor_mod, chan_use, check_no_fanout, check_single_producer, emit_actor,
+    emit_chan_file, emit_shared_decls,
+};
 use crate::network_ffi::ffi::Network;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -30,6 +34,7 @@ pub struct Options {
     pub cap: usize,
     pub fire_budget: usize,
     pub typestate: bool,
+    pub orcc: bool,
 }
 
 impl Options {
@@ -42,13 +47,69 @@ impl Options {
     }
 }
 
+struct Spec {
+    deps: String,
+    chan_imports: &'static str,
+    main_imports: &'static str,
+    single_producer: bool,
+    ports: fn(&Program<'_>, Options) -> String,
+    actor_extra: fn(&Actor, Options) -> String,
+    main: fn(&Program<'_>, Options) -> String,
+}
+
+fn no_actor_extra(_actor: &Actor, _options: Options) -> String {
+    String::new()
+}
+
 impl Backend {
-    pub fn generator(self, options: Options) -> Box<dyn CodeGenerator> {
+    pub fn name(self) -> &'static str {
         match self {
-            Backend::Naive => Box::new(naive::Naive { options }),
-            Backend::Threads => Box::new(threads::Threads { options }),
-            Backend::Tokio => Box::new(tokio::Tokio { options }),
-            Backend::Rayon => Box::new(rayon::Rayon { options }),
+            Backend::Naive => "naive",
+            Backend::Threads => "threads",
+            Backend::Rayon => "rayon",
+            Backend::Tokio => "tokio",
+        }
+    }
+
+    fn spec(self) -> Spec {
+        match self {
+            Backend::Naive => Spec {
+                deps: String::new(),
+                chan_imports: common::LOCAL_CHAN_IMPORTS,
+                main_imports: "use std::collections::VecDeque;\nuse std::rc::Rc;\n",
+                single_producer: false,
+                ports: common::local_ports,
+                actor_extra: no_actor_extra,
+                main: naive::emit_main,
+            },
+            Backend::Threads => Spec {
+                deps: String::new(),
+                chan_imports: common::RING_IMPORTS,
+                main_imports: common::RING_MAIN_IMPORTS,
+                single_producer: true,
+                ports: common::ring_ports,
+                actor_extra: no_actor_extra,
+                main: threads::emit_main,
+            },
+            Backend::Rayon => Spec {
+                deps: "rayon = \"1\"\n".to_string(),
+                chan_imports: common::RING_IMPORTS,
+                main_imports: common::RING_MAIN_IMPORTS,
+                single_producer: true,
+                ports: common::ring_ports,
+                actor_extra: no_actor_extra,
+                main: rayon::emit_main,
+            },
+            Backend::Tokio => Spec {
+                deps: "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\"] }\n"
+                    .to_string(),
+                chan_imports: "use std::collections::VecDeque;\n",
+                main_imports: "use std::collections::VecDeque;\n",
+                single_producer: false,
+                ports: tokio::ports,
+                actor_extra: tokio::actor_extra,
+                main: tokio::emit_main,
+            },
         }
     }
 }
@@ -75,10 +136,86 @@ impl Program<'_> {
     }
 }
 
-pub trait CodeGenerator {
-    fn name(&self) -> &'static str;
+pub fn generate(
+    backend: Backend,
+    program: &Program<'_>,
+    out_dir: &Path,
+    options: Options,
+) -> io::Result<()> {
+    let spec = backend.spec();
 
-    fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()>;
+    check_no_fanout(program)?;
+    if spec.single_producer {
+        check_single_producer(program)?;
+    }
+
+    let src_dir = out_dir.join("src");
+    for (name, source) in emit_files(&spec, program, options) {
+        let tokens = source.parse().map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "generated source for {name} failed to tokenize: {err}\n--- source ---\n{source}"
+                ),
+            )
+        })?;
+        write_rust(&src_dir.join(&name), tokens)?;
+    }
+
+    write_cargo_toml(
+        out_dir,
+        &program.network.name,
+        program.has_natives(),
+        &spec.deps,
+        options.orcc,
+    )?;
+    if program.has_natives() {
+        write_native_support(out_dir, program.native_sources, options.orcc)?;
+    }
+    Ok(())
+}
+
+fn emit_files(spec: &Spec, program: &Program<'_>, options: Options) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+
+    for actor in program.actors.values() {
+        let mut src = String::new();
+        src.push_str("#![allow(warnings)]\n");
+        src.push_str("use std::collections::VecDeque;\n");
+        src.push_str("use super::*;\n\n");
+        src.push_str(&emit_actor(actor, options.typestate));
+        src.push_str(&(spec.actor_extra)(actor, options));
+        files.push((format!("{}.rs", actor_mod(&actor.name)), src));
+    }
+
+    files.push((
+        format!("{CHAN_MOD}.rs"),
+        emit_chan_file(
+            spec.chan_imports,
+            options.cap,
+            &(spec.ports)(program, options),
+        ),
+    ));
+
+    let mut main = String::new();
+    main.push_str("#![allow(warnings)]\n");
+    main.push_str(spec.main_imports);
+    main.push('\n');
+    main.push_str(&chan_use());
+    for actor in program.actors.values() {
+        let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
+    }
+    main.push('\n');
+    let _ = writeln!(
+        main,
+        "const FIRE_BUDGET: usize = {};\n",
+        options.fire_budget_literal()
+    );
+    main.push_str(&emit_shared_decls(program, options));
+    main.push_str(&(spec.main)(program, options));
+    files.push(("main.rs".to_string(), main));
+
+    files
 }
 
 pub fn write_cargo_toml(

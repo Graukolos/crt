@@ -1,121 +1,17 @@
 use std::fmt::Write as _;
-use std::io;
-use std::path::Path;
 
 use crate::ast::Actor;
 use crate::codegen::common::{
-    CHAN_MOD, actor_mod, actor_port, actor_type, chan_credit, chan_rx, chan_tx, chan_use,
-    check_no_fanout, emit_actor, emit_chan_file, emit_shared_decls, ident, inst_var, instance_args,
-    out_port_ctor, output_burst, rust_type,
+    actor_mod, actor_port, actor_type, chan_credit, chan_rx, chan_tx, ident, inst_var,
+    instance_args, out_port_ctor, output_burst, rust_type,
 };
-use crate::codegen::{CodeGenerator, Options, Program};
+use crate::codegen::{Options, Program};
 use crate::network_ffi::ffi::Instance;
 
-pub struct Tokio {
-    pub options: Options,
-}
-
-impl CodeGenerator for Tokio {
-    fn name(&self) -> &'static str {
-        "tokio"
-    }
-
-    fn generate(&self, program: &Program<'_>, out_dir: &Path, orcc: bool) -> io::Result<()> {
-        check_no_fanout(program)?;
-        let src_dir = out_dir.join("src");
-        for (name, source) in emit_files(program, self.options, orcc) {
-            let tokens = source.parse().map_err(|err| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "generated source for {name} failed to tokenize: {err}\n--- source ---\n{source}"
-                    ),
-                )
-            })?;
-            super::write_rust(&src_dir.join(&name), tokens)?;
-        }
-        let deps =
-            "tokio = { version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\"] }\n";
-        super::write_cargo_toml(
-            out_dir,
-            &program.network.name,
-            program.has_natives(),
-            deps,
-            orcc,
-        )?;
-        if program.has_natives() {
-            super::write_native_support(out_dir, program.native_sources, orcc)?;
-        }
-        Ok(())
-    }
-}
-
-fn emit_files(program: &Program<'_>, options: Options, orcc: bool) -> Vec<(String, String)> {
-    let typestate = options.typestate;
-    let unbounded = options.cap == 0;
-    let mut files = Vec::new();
-
-    let classes: Vec<&String> = program.actors.keys().collect();
-
-    for class in &classes {
-        let actor = &program.actors[*class];
-        let mut src = String::new();
-        src.push_str("#![allow(warnings)]\n");
-        src.push_str("use std::collections::VecDeque;\n");
-        src.push_str("use super::*;\n\n");
-        src.push_str(&emit_actor(actor, typestate));
-        src.push('\n');
-        src.push_str(&emit_task_run(actor, typestate));
-        files.push((format!("{}.rs", actor_mod(&actor.name)), src));
-    }
-
-    files.push((
-        format!("{CHAN_MOD}.rs"),
-        emit_chan_file(
-            "use std::collections::VecDeque;\n",
-            options.cap,
-            &emit_ports(unbounded),
-        ),
-    ));
-
-    let mut main = String::new();
-    main.push_str("#![allow(warnings)]\n");
-    main.push_str("use std::collections::VecDeque;\n\n");
-    main.push_str(&chan_use());
-    for class in &classes {
-        let actor = &program.actors[*class];
-        let _ = writeln!(main, "mod {};", actor_mod(&actor.name));
-    }
-    main.push('\n');
-    let _ = writeln!(
-        main,
-        "const FIRE_BUDGET: usize = {};\n",
-        options.fire_budget_literal()
-    );
-    main.push_str(&emit_shared_decls(program, orcc));
-    main.push_str(&emit_main(program, unbounded, orcc, typestate));
-    files.push(("main.rs".to_string(), main));
-
-    files
-}
-
-fn emit_ports(unbounded: bool) -> String {
-    let (tx_ty, rx_ty, send_await) = if unbounded {
-        (
-            "tokio::sync::mpsc::UnboundedSender",
-            "tokio::sync::mpsc::UnboundedReceiver",
-            "",
-        )
-    } else {
-        (
-            "tokio::sync::mpsc::Sender",
-            "tokio::sync::mpsc::Receiver",
-            ".await",
-        )
-    };
+pub fn ports(_program: &Program<'_>, _options: Options) -> String {
     format!(
-        r"pub type Tx<T> = {tx_ty}<Vec<T>>;
-pub type Rx<T> = {rx_ty}<Vec<T>>;
+        r"pub type Tx<T> = tokio::sync::mpsc::Sender<Vec<T>>;
+pub type Rx<T> = tokio::sync::mpsc::Receiver<Vec<T>>;
 pub type Credit = std::sync::Arc<std::sync::atomic::AtomicUsize>;
 
 const CREDIT_ORDER: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
@@ -124,9 +20,12 @@ pub fn credit() -> Credit {{
     std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0))
 }}
 
-{IN_PORT}{}",
-        emit_out_port(send_await)
+{IN_PORT}{OUT_PORT}"
     )
+}
+
+pub fn actor_extra(actor: &Actor, options: Options) -> String {
+    format!("\n{}", emit_task_run(actor, options.typestate))
 }
 
 const IN_PORT: &str = r"pub struct InPort<T> {
@@ -175,50 +74,43 @@ pub struct OutPort<T> {
 }
 ";
 
-fn emit_out_port(send_await: &str) -> String {
-    format!(
-        r"
-impl<T: Clone> OutPort<T> {{
-    pub fn none() -> Self {{
-        Self {{ txs: Txs::None, buf: VecDeque::new() }}
-    }}
-    pub fn one(target: (Tx<T>, Credit)) -> Self {{
-        Self {{ txs: Txs::One(target.0, target.1), buf: VecDeque::new() }}
-    }}
-    pub fn room(&mut self) -> usize {{
-        if CAP == 0 {{
-            return usize::MAX;
-        }}
+const OUT_PORT: &str = r"
+impl<T: Clone> OutPort<T> {
+    pub fn none() -> Self {
+        Self { txs: Txs::None, buf: VecDeque::new() }
+    }
+    pub fn one(target: (Tx<T>, Credit)) -> Self {
+        Self { txs: Txs::One(target.0, target.1), buf: VecDeque::new() }
+    }
+    pub fn room(&mut self) -> usize {
         let pending = self.buf.len();
-        match &self.txs {{
+        match &self.txs {
             Txs::None => usize::MAX,
             Txs::One(_, credit) => CAP.saturating_sub(credit.load(CREDIT_ORDER) + pending),
-        }}
-    }}
-    pub fn has_room(&mut self) -> bool {{
+        }
+    }
+    pub fn has_room(&mut self) -> bool {
         self.room() > 0
-    }}
-    pub fn push_back(&mut self, value: T) {{
+    }
+    pub fn push_back(&mut self, value: T) {
         self.buf.push_back(value);
-    }}
-    pub async fn flush(&mut self) {{
-        if self.buf.is_empty() {{
+    }
+    pub async fn flush(&mut self) {
+        if self.buf.is_empty() {
             return;
-        }}
+        }
         let chunk: Vec<T> = self.buf.drain(..).collect();
         let tokens = chunk.len();
-        match &self.txs {{
-            Txs::None => {{}}
-            Txs::One(tx, credit) => {{
+        match &self.txs {
+            Txs::None => {}
+            Txs::One(tx, credit) => {
                 credit.fetch_add(tokens, CREDIT_ORDER);
-                let _ = tx.send(chunk){send_await};
-            }}
-        }}
-    }}
-}}
-"
-    )
+                let _ = tx.send(chunk).await;
+            }
+        }
+    }
 }
+";
 
 fn emit_flush(actor: &Actor, typestate: bool) -> String {
     let mut out = String::new();
@@ -326,7 +218,8 @@ fn emit_task_run(actor: &Actor, typestate: bool) -> String {
     format!("pub async fn {run}({sig}) {{\n{body}}}\n")
 }
 
-fn emit_main(program: &Program<'_>, unbounded: bool, orcc: bool, typestate: bool) -> String {
+pub fn emit_main(program: &Program<'_>, options: Options) -> String {
+    let typestate = options.typestate;
     let network = program.network;
     let instances: Vec<&Instance> = network
         .instances
@@ -337,24 +230,17 @@ fn emit_main(program: &Program<'_>, unbounded: bool, orcc: bool, typestate: bool
     let mut out = String::new();
     out.push_str("#[tokio::main]\nasync fn main() {\n");
 
-    if orcc {
+    if options.orcc {
         out.push_str(super::orcc::MAIN_SETUP);
     }
 
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
         for p in &actor.inports {
-            let ctor = if unbounded {
-                format!(
-                    "tokio::sync::mpsc::unbounded_channel::<Vec<{}>>()",
-                    rust_type(&p.typ)
-                )
-            } else {
-                format!(
-                    "tokio::sync::mpsc::channel::<Vec<{}>>(CAP)",
-                    rust_type(&p.typ)
-                )
-            };
+            let ctor = format!(
+                "tokio::sync::mpsc::channel::<Vec<{}>>(CAP)",
+                rust_type(&p.typ)
+            );
             let _ = writeln!(
                 out,
                 "    let ({}, {}) = {ctor};",

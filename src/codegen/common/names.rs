@@ -15,16 +15,12 @@ pub fn ident(name: &str) -> String {
     out
 }
 
-pub fn type_ident(name: &str) -> String {
-    ident(name)
-}
-
 pub fn fsm_variant(state: &str) -> String {
     format!("St_{}", ident(state))
 }
 
 pub fn fsm_wrapper(name: &str) -> String {
-    format!("{}Fsm", type_ident(name))
+    format!("{}Fsm", ident(name))
 }
 
 pub fn inst_var(id: &str) -> String {

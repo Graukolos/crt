@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm, Stmt};
 
 use super::{
-    Priorities, emit_expr, emit_stmt, emit_vardefs, fsm_variant, fsm_wrapper, ident, port_field,
-    port_ref, rust_type, type_ident, var_init, var_rust_type,
+    Priorities, emit_const_expr, emit_expr, emit_stmt, emit_vardefs, fsm_variant, fsm_wrapper,
+    ident, port_field, port_ref, rust_type, var_init, var_rust_type,
 };
 
 pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
@@ -19,7 +19,7 @@ pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
         return emit_actor_typestate(actor);
     }
 
-    let ty = type_ident(&actor.name);
+    let ty = ident(&actor.name);
     let state = actor_state(actor);
     let mut out = String::new();
 
@@ -109,15 +109,26 @@ fn fsm_states(fsm: &ScheduleFsm) -> BTreeSet<String> {
     states
 }
 
-fn stmts_return(stmts: &[Stmt]) -> bool {
-    stmts.iter().any(|stmt| match stmt {
-        Stmt::Return => true,
-        Stmt::If { then, els, .. } => stmts_return(then) || stmts_return(els),
-        Stmt::Block { stmts, .. } | Stmt::While { stmts, .. } | Stmt::Foreach { stmts, .. } => {
-            stmts_return(stmts)
+fn walk_stmts(stmts: &[Stmt], visit: &mut impl FnMut(&Stmt)) {
+    for stmt in stmts {
+        visit(stmt);
+        match stmt {
+            Stmt::If { then, els, .. } => {
+                walk_stmts(then, visit);
+                walk_stmts(els, visit);
+            }
+            Stmt::Block { stmts, .. } | Stmt::While { stmts, .. } | Stmt::Foreach { stmts, .. } => {
+                walk_stmts(stmts, visit);
+            }
+            _ => {}
         }
-        _ => false,
-    })
+    }
+}
+
+fn stmts_return(stmts: &[Stmt]) -> bool {
+    let mut found = false;
+    walk_stmts(stmts, &mut |stmt| found |= matches!(stmt, Stmt::Return));
+    found
 }
 
 pub fn typestate_actor(actor: &Actor, typestate: bool) -> bool {
@@ -134,7 +145,7 @@ pub fn actor_type(actor: &Actor, typestate: bool) -> String {
     if typestate_actor(actor, typestate) {
         fsm_wrapper(&actor.name)
     } else {
-        type_ident(&actor.name)
+        ident(&actor.name)
     }
 }
 
@@ -182,7 +193,7 @@ fn field_names(actor: &Actor) -> Vec<String> {
 }
 
 fn emit_actor_typestate(actor: &Actor) -> String {
-    let ty = type_ident(&actor.name);
+    let ty = ident(&actor.name);
     let wrapper = fsm_wrapper(&actor.name);
     let fsm = actor.fsm.as_ref().expect("typestate requires an fsm");
     let state = actor_state(actor);
@@ -273,7 +284,7 @@ fn emit_actor_typestate(actor: &Actor) -> String {
 }
 
 fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
-    let ty = type_ident(&actor.name);
+    let ty = ident(&actor.name);
     let wrapper = fsm_wrapper(&actor.name);
     let fsm = actor.fsm.as_ref().expect("typestate requires an fsm");
     let mut out = String::new();
@@ -364,59 +375,48 @@ fn avail_counter(port: &str) -> String {
 }
 
 fn stmt_ports(stmts: &[Stmt], touched: &mut BTreeSet<String>) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::OutputWrite { port, .. } | Stmt::InputRead { port, .. } => {
-                touched.insert(port.clone());
-            }
-            Stmt::If { then, els, .. } => {
-                stmt_ports(then, touched);
-                stmt_ports(els, touched);
-            }
-            Stmt::Block { stmts, .. } | Stmt::While { stmts, .. } | Stmt::Foreach { stmts, .. } => {
-                stmt_ports(stmts, touched);
-            }
-            _ => {}
+    walk_stmts(stmts, &mut |stmt| {
+        if let Stmt::OutputWrite { port, .. } | Stmt::InputRead { port, .. } = stmt {
+            touched.insert(port.clone());
         }
-    }
+    });
 }
 
-fn guard_time_evaluable(expr: &Expr, locals: &HashSet<String>) -> bool {
+fn child_exprs(expr: &Expr) -> Vec<&Expr> {
     match expr {
-        Expr::Paren(inner) => guard_time_evaluable(inner, locals),
-        Expr::BinOp { left, right, .. } => {
-            guard_time_evaluable(left, locals) && guard_time_evaluable(right, locals)
-        }
-        Expr::Literal { .. } | Expr::FsmEnumElement { .. } => true,
-        Expr::Identifier {
-            name,
-            indices,
-            call,
-            ..
-        } => {
-            !locals.contains(name)
-                && indices.iter().all(|e| guard_time_evaluable(e, locals))
-                && call
-                    .iter()
-                    .flatten()
-                    .all(|e| guard_time_evaluable(e, locals))
-        }
-        Expr::PortPreview { .. } | Expr::PortSize { .. } | Expr::PortFree { .. } => false,
-        Expr::Ternary { cond, then, els } => {
-            guard_time_evaluable(cond, locals)
-                && guard_time_evaluable(then, locals)
-                && guard_time_evaluable(els, locals)
+        Expr::Paren(inner) => vec![inner],
+        Expr::BinOp { left, right, .. } => vec![left, right],
+        Expr::Ternary { cond, then, els } => vec![cond, then, els],
+        Expr::Identifier { indices, call, .. } => {
+            indices.iter().chain(call.iter().flatten()).collect()
         }
         Expr::ListComprehension {
             expressions,
             generators,
-        } => {
-            expressions.iter().all(|e| guard_time_evaluable(e, locals))
-                && generators.iter().all(|g| {
-                    guard_time_evaluable(&g.start, locals) && guard_time_evaluable(&g.end, locals)
-                })
-        }
+        } => expressions
+            .iter()
+            .chain(generators.iter().flat_map(|g| [&g.start, &g.end]))
+            .collect(),
+        Expr::PortPreview { index, .. } => index.iter().map(AsRef::as_ref).collect(),
+        Expr::Literal { .. }
+        | Expr::FsmEnumElement { .. }
+        | Expr::PortSize { .. }
+        | Expr::PortFree { .. } => Vec::new(),
     }
+}
+
+fn reads_ports_or(expr: &Expr, names: &HashSet<String>) -> bool {
+    match expr {
+        Expr::PortPreview { .. } | Expr::PortSize { .. } | Expr::PortFree { .. } => true,
+        Expr::Identifier { name, .. } if names.contains(name) => true,
+        _ => child_exprs(expr)
+            .into_iter()
+            .any(|child| reads_ports_or(child, names)),
+    }
+}
+
+fn guard_time_evaluable(expr: &Expr, locals: &HashSet<String>) -> bool {
+    !reads_ports_or(expr, locals)
 }
 
 pub fn output_burst(actor: &Actor, port: &str) -> Option<String> {
@@ -435,7 +435,7 @@ pub fn output_burst(actor: &Actor, port: &str) -> Option<String> {
                 Some(repeat) if guard_time_evaluable(repeat, &state) => total.push(format!(
                     "({} * ({})) as usize",
                     output.expressions.len(),
-                    emit_expr(repeat, &HashSet::new(), &HashSet::new())
+                    emit_const_expr(repeat)
                 )),
                 Some(_) => return None,
             }
@@ -699,39 +699,6 @@ fn count_bindings(rates: &Rates) -> String {
     out
 }
 
-fn reads_tokens(expr: &Expr, tokens: &HashSet<String>) -> bool {
-    match expr {
-        Expr::Paren(inner) => reads_tokens(inner, tokens),
-        Expr::BinOp { left, right, .. } => {
-            reads_tokens(left, tokens) || reads_tokens(right, tokens)
-        }
-        Expr::Literal { .. } | Expr::FsmEnumElement { .. } => false,
-        Expr::Identifier {
-            name,
-            indices,
-            call,
-            ..
-        } => {
-            tokens.contains(name)
-                || indices.iter().any(|e| reads_tokens(e, tokens))
-                || call.iter().flatten().any(|e| reads_tokens(e, tokens))
-        }
-        Expr::PortPreview { .. } | Expr::PortSize { .. } | Expr::PortFree { .. } => true,
-        Expr::Ternary { cond, then, els } => {
-            reads_tokens(cond, tokens) || reads_tokens(then, tokens) || reads_tokens(els, tokens)
-        }
-        Expr::ListComprehension {
-            expressions,
-            generators,
-        } => {
-            expressions.iter().any(|e| reads_tokens(e, tokens))
-                || generators
-                    .iter()
-                    .any(|g| reads_tokens(&g.start, tokens) || reads_tokens(&g.end, tokens))
-        }
-    }
-}
-
 fn emit_recvs(action: &Action, state: &HashSet<String>, locals: &HashSet<String>) -> String {
     let mut out = String::new();
     for pattern in &action.input_patterns {
@@ -812,7 +779,7 @@ fn emit_action(
         locals.insert(v.name.clone());
     }
 
-    let consume = !action.guards.iter().any(|g| reads_tokens(g, &tokens));
+    let consume = !action.guards.iter().any(|g| reads_ports_or(g, &tokens));
 
     let body = emit_action_body(action, state, fsm_next, !consume);
     let rates = (commit == Commit::Sched).then(|| action_rates(action, state, &locals));

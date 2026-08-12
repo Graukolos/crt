@@ -1,8 +1,6 @@
-use std::collections::HashSet;
-
 use crate::ast::{Expr, Type, VarDef};
 
-use super::{emit_expr, ident};
+use super::{emit_const_expr, ident};
 
 pub fn rust_type(t: &Type) -> String {
     if let Some(inner) = &t.list {
@@ -22,7 +20,7 @@ pub fn default_value(t: &Type) -> String {
             Some(size) => format!(
                 "vec![{}; ({}) as usize]",
                 default_value(inner),
-                emit_expr(size, &HashSet::new(), &HashSet::new())
+                emit_const_expr(size)
             ),
             None => "Vec::new()".to_string(),
         };
@@ -49,7 +47,7 @@ pub fn emit_const(v: &VarDef) -> String {
     }
 
     let value = match &v.assign {
-        Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
+        Some(expr) => emit_const_expr(expr),
         None => default_value(&v.typ),
     };
     format!(
@@ -73,12 +71,12 @@ fn const_array_value(expr: &Expr) -> String {
             .join(", ");
         return format!("&[{elems}]");
     }
-    emit_expr(expr, &HashSet::new(), &HashSet::new())
+    emit_const_expr(expr)
 }
 
 pub fn var_init(v: &VarDef) -> String {
     match &v.assign {
-        Some(expr) => emit_expr(expr, &HashSet::new(), &HashSet::new()),
+        Some(expr) => emit_const_expr(expr),
         None => var_default(v),
     }
 }
@@ -94,10 +92,7 @@ pub fn var_rust_type(v: &VarDef) -> String {
 pub fn var_default(v: &VarDef) -> String {
     let mut val = default_value(&v.typ);
     for dim in v.arrays.iter().rev() {
-        val = format!(
-            "vec![{val}; ({}) as usize]",
-            emit_expr(dim, &HashSet::new(), &HashSet::new())
-        );
+        val = format!("vec![{val}; ({}) as usize]", emit_const_expr(dim));
     }
     val
 }
