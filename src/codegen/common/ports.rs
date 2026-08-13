@@ -131,6 +131,10 @@ impl<T: Slot> Chan<T> {
         }
         T::get(&self.buf[k])
     }
+    #[inline(always)]
+    pub fn publish_write(&self) {}
+    #[inline(always)]
+    pub fn publish_read(&self) {}
 }
 ";
 
@@ -210,12 +214,17 @@ fn atomic_slot(ty: &str, cell: &str, encode: &str, decode: &str) -> String {
 const SPSC_CHAN: &str = r"#[repr(align(128))]
 pub struct Side {
     index: AtomicUsize,
+    head: AtomicUsize,
     cache: AtomicUsize,
 }
 
 impl Side {
     fn new() -> Self {
-        Self { index: AtomicUsize::new(0), cache: AtomicUsize::new(0) }
+        Self {
+            index: AtomicUsize::new(0),
+            head: AtomicUsize::new(0),
+            cache: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -242,16 +251,19 @@ impl<T: Slot> Chan<T> {
     #[inline(always)]
     pub fn len(&self) -> usize {
         let w = self.prod.index.load(Ordering::Acquire);
-        let r = self.cons.index.load(Ordering::Acquire);
+        let r = self.cons.head.load(Ordering::Relaxed);
         if w >= r { w - r } else { self.slots + w - r }
     }
     #[inline(always)]
     pub fn room(&self) -> usize {
-        CAP - self.len()
+        let w = self.prod.head.load(Ordering::Relaxed);
+        let r = self.cons.index.load(Ordering::Acquire);
+        let used = if w >= r { w - r } else { self.slots + w - r };
+        CAP - used
     }
     #[inline(always)]
     pub fn try_push(&self, value: T) -> bool {
-        let w = self.prod.index.load(Ordering::Relaxed);
+        let w = self.prod.head.load(Ordering::Relaxed);
         let next = if w + 1 == self.slots { 0 } else { w + 1 };
         if next == self.prod.cache.load(Ordering::Relaxed) {
             let r = self.cons.index.load(Ordering::Acquire);
@@ -261,25 +273,39 @@ impl<T: Slot> Chan<T> {
             }
         }
         T::put(&self.buf[w], value);
-        self.prod.index.store(next, Ordering::Release);
+        self.prod.head.store(next, Ordering::Relaxed);
         true
     }
     #[inline(always)]
     pub fn pop(&self) -> T {
-        let r = self.cons.index.load(Ordering::Relaxed);
+        let r = self.cons.head.load(Ordering::Relaxed);
         let value = T::get(&self.buf[r]);
         self.cons
-            .index
-            .store(if r + 1 == self.slots { 0 } else { r + 1 }, Ordering::Release);
+            .head
+            .store(if r + 1 == self.slots { 0 } else { r + 1 }, Ordering::Relaxed);
         value
     }
     #[inline(always)]
     pub fn at(&self, index: usize) -> T {
-        let mut k = self.cons.index.load(Ordering::Relaxed) + index;
+        let mut k = self.cons.head.load(Ordering::Relaxed) + index;
         if k >= self.slots {
             k -= self.slots;
         }
         T::get(&self.buf[k])
+    }
+    #[inline(always)]
+    pub fn publish_write(&self) {
+        let head = self.prod.head.load(Ordering::Relaxed);
+        if head != self.prod.index.load(Ordering::Relaxed) {
+            self.prod.index.store(head, Ordering::Release);
+        }
+    }
+    #[inline(always)]
+    pub fn publish_read(&self) {
+        let head = self.cons.head.load(Ordering::Relaxed);
+        if head != self.cons.index.load(Ordering::Relaxed) {
+            self.cons.index.store(head, Ordering::Release);
+        }
     }
 }
 ";
@@ -322,6 +348,10 @@ impl<T: {bound}> InPort<T> {{
             Some(self.chan.pop())
         }}
     }}
+    #[inline(always)]
+    pub fn commit(&mut self) {{
+        self.chan.publish_read();
+    }}
 }}
 "
     )
@@ -358,6 +388,13 @@ impl<T: {bound}> OutPort<T> {{
                     Self::drain(chan, pending)
                 }}
             }}
+        }}
+    }}
+    pub fn commit(&mut self) {{
+        self.pump();
+        match self {{
+            Self::None => {{}}
+            Self::One(chan, _) => chan.publish_write(),
         }}
     }}
     #[inline(always)]

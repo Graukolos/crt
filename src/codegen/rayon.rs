@@ -10,17 +10,17 @@ pub fn emit_main(program: &Program<'_>, options: Options) -> String {
     out.push_str("        rayon::scope(|s| {\n");
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
-        let mut pumps = String::new();
-        for port in &actor.outports {
+        let mut commits = String::new();
+        for port in actor.outports.iter().chain(actor.inports.iter()) {
             let _ = write!(
-                pumps,
-                " {}.pump();",
+                commits,
+                " {}.commit();",
                 actor_port(actor, options.typestate, &inst_var(&inst.id), &port.name)
             );
         }
         let _ = writeln!(
             out,
-            "            s.spawn(|_| {{ {}.schedule();{pumps} }});",
+            "            s.spawn(|_| {{ {}.schedule();{commits} }});",
             inst_var(&inst.id)
         );
     }

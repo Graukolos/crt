@@ -26,17 +26,17 @@ pub fn emit_main(program: &Program<'_>, options: Options) -> String {
     out.push_str("                    let mut __idle = true;\n");
     for inst in &instances {
         let actor = &program.actors[&inst.class_name];
-        let mut pumps = String::new();
-        for port in &actor.outports {
+        let mut commits = String::new();
+        for port in actor.outports.iter().chain(actor.inports.iter()) {
             let _ = write!(
-                pumps,
-                " {}.pump();",
+                commits,
+                " {}.commit();",
                 actor_port(actor, options.typestate, "__actor", &port.name)
             );
         }
         let _ = writeln!(
             out,
-            "                    if let Ok(mut __actor) = {}.try_lock() {{ let __n = __actor.schedule();{pumps} __idle &= __n == 0; }}",
+            "                    if let Ok(mut __actor) = {}.try_lock() {{ let __n = __actor.schedule();{commits} __idle &= __n == 0; }}",
             inst_var(&inst.id)
         );
     }
