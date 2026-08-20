@@ -21,7 +21,7 @@ struct Cli {
     source_dir: PathBuf,
     #[arg(long, default_value = "generated")]
     out: PathBuf,
-    #[arg(long, value_enum, default_value_t = Backend::Naive)]
+    #[arg(long, value_enum, default_value_t = Backend::Single)]
     backend: Backend,
     #[arg(long)]
     native_dir: Option<PathBuf>,

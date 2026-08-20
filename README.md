@@ -46,7 +46,7 @@ files.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--out <DIR>` | `generated` | Where to write the Cargo project |
-| `--backend <B>` | `naive` | `naive`, `threads`, `rayon` or `tokio` |
+| `--backend <B>` | `single` | `single`, `threads`, `rayon` or `tokio` |
 | `--native-dir <DIR>` | `../lib/native` | Directory of `@native` C or C++ sources |
 | `--cap <N>` | `1024` | Channel capacity in tokens; must be at least 1 |
 | `--fire-budget <N>` | `1024` | Max consecutive firings per `schedule()` call; `0` means unlimited |
@@ -57,7 +57,7 @@ files.
 
 | Backend | Model | Channels |
 | --- | --- | --- |
-| `naive` | Single-threaded round-robin over all actors | `Rc` ring of `Cell` slots |
+| `single` | Single-threaded round-robin over all actors | `Rc` ring of `Cell` slots |
 | `threads` | N OS threads contending for `Mutex`-guarded actors (DCG's architecture) | lock-free SPSC ring |
 | `rayon` | Bulk-synchronous parallel: one `rayon::scope` superstep per round | lock-free SPSC ring |
 | `tokio` | One async task per actor, chunked sends with credit-based backpressure | `tokio::mpsc` |

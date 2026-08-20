@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CRT=$ROOT/target/release/crt
-BACKENDS=(naive threads rayon tokio)
+BACKENDS=(single threads rayon tokio)
 VARIANTS=("${BACKENDS[@]}" "${BACKENDS[@]/#/ts-}")
 CONFIGS=("${VARIANTS[@]/#/crt-}" dcg)
 CAP=${CAP:-1024}

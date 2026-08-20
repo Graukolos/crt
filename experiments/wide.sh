@@ -5,7 +5,7 @@ set -euo pipefail
 NET=wide
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CRT=$ROOT/target/release/crt
-BACKENDS=(naive threads rayon tokio)
+BACKENDS=(single threads rayon tokio)
 VARIANTS=("${BACKENDS[@]}" "${BACKENDS[@]/#/ts-}")
 CAP=${CAP:-1024}
 FIRE_BUDGET=${FIRE_BUDGET:-1024}

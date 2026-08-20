@@ -1,7 +1,7 @@
 mod common;
-mod naive;
 mod orcc;
 mod rayon;
+mod single;
 mod threads;
 mod tokio;
 
@@ -23,7 +23,7 @@ use crate::network_ffi::ffi::Network;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Backend {
-    Naive,
+    Single,
     Threads,
     Rayon,
     Tokio,
@@ -64,7 +64,7 @@ fn no_actor_extra(_actor: &Actor, _options: Options) -> String {
 impl Backend {
     pub fn name(self) -> &'static str {
         match self {
-            Backend::Naive => "naive",
+            Backend::Single => "single",
             Backend::Threads => "threads",
             Backend::Rayon => "rayon",
             Backend::Tokio => "tokio",
@@ -73,14 +73,14 @@ impl Backend {
 
     fn spec(self) -> Spec {
         match self {
-            Backend::Naive => Spec {
+            Backend::Single => Spec {
                 deps: String::new(),
                 chan_imports: common::LOCAL_CHAN_IMPORTS,
                 main_imports: "use std::collections::VecDeque;\nuse std::rc::Rc;\n",
                 single_producer: false,
                 ports: common::local_ports,
                 actor_extra: no_actor_extra,
-                main: naive::emit_main,
+                main: single::emit_main,
             },
             Backend::Threads => Spec {
                 deps: String::new(),
