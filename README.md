@@ -79,16 +79,53 @@ out/
 
 ## Experiments
 
-`experiments/` holds one self-contained script per network - no shared library, each
-runs on its own. Each generates, builds and exercises eight variants: the four backends,
-each with and without `--typestate`.
+`bench.sh` is the benchmark driver. It generates, builds and measures all nine
+configurations - the four backends with and without `--typestate`, plus DCG - over the
+`balanced`, `wide`, `pipeline` and `zigbee` networks, and writes hyperfine's raw JSON
+plus an `index.json` describing it.
 
-`zigbee.sh`, `balanced.sh`, `wide.sh` and `pipeline.sh` are the benchmarks - their
-networks have an `exit()` native and therefore terminate. `zigbee.sh` verifies every
-variant against `lib/reference_output/tx_stream.out` before benchmarking. `scaling.sh`
-sweeps those networks over core counts with `taskset`. `build-checks.sh` covers eleven
-`orc-apps` networks that never terminate, so it generates, builds, and samples each
-variant under a timeout as a codegen regression check.
+```sh
+MACHINE=ryzen OUT=/path/to/thesis/results experiments/bench.sh all
+```
 
-`CAP` and `FIRE_BUDGET` are environment overrides, and `CAP` is also passed to DCG's
-`-s`, so both generators are compared at matched FIFO sizes.
+`MACHINE` is required and names the machine in the index; `OUT` defaults to
+`results/` inside this repo. DCG is built from the submodule into
+`Dataflow_Code_Generator/build` on first use and reused afterwards; set `DCG` to a
+binary path to use one built elsewhere. The experiments are:
+
+| Experiment | Sweeps | Notes |
+| --- | --- | --- |
+| `baseline` | nothing | all configurations at the default `CAP` and `FIRE_BUDGET`, on every core |
+| `cores` | `$CORES` | pinned with `taskset`; DCG is rebuilt per core count |
+| `cap` | `$CAPS` | `crt` and DCG are both rebuilt per value, matched via `--cap` and `-s` |
+| `budget` | `$BUDGETS` | `crt` only; DCG has no firing budget |
+
+`all` runs the four in order. `CAP`, `FIRE_BUDGET`, `CORES`, `CAPS`, `BUDGETS`,
+`NETWORKS`, `RUNS`, `WARMUP`, `TIMEOUT` and `ZIGBEE_REPEAT` are environment overrides;
+`bench.sh` with no arguments prints them.
+
+Output layout:
+
+```
+$OUT/
+  index.json                                    coordinates, machine and toolchain metadata
+  raw/<machine>/<experiment>/<stem>.json        hyperfine --export-json, unmodified
+```
+
+Runs accumulate: sweeping a second machine merges into the same `index.json` rather
+than replacing it, and re-running one experiment replaces only that machine's entry for
+it. Builds are cached in `$WORK` (default `/tmp/crt-bench`), so an interrupted sweep
+resumes without recompiling.
+
+`report.py` prints the wall-time and speedup tables from a finished `index.json`:
+
+```sh
+python3 experiments/report.py results ryzen
+```
+
+The remaining scripts are for interactive use and print to stdout only.
+`zigbee.sh`, `balanced.sh`, `wide.sh` and `pipeline.sh` each build one network and
+benchmark its variants; `zigbee.sh` also verifies every variant against
+`lib/reference_output/tx_stream.out`. `build-checks.sh` covers eleven `orc-apps`
+networks that never terminate, so it generates, builds, and samples each variant under
+a timeout as a codegen regression check.

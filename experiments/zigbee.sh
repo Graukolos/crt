@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CRT=$ROOT/target/release/crt
+DCG=${DCG:-$ROOT/Dataflow_Code_Generator/build/Dataflow_Code_Generator}
 BACKENDS=(single threads rayon tokio)
 VARIANTS=("${BACKENDS[@]}" "${BACKENDS[@]/#/ts-}")
 CAP=${CAP:-1024}
@@ -19,6 +20,11 @@ BIN=top_zigbee_tx
 WORK=/tmp/crt-zigbee
 
 cd "$ROOT"
+
+if [ ! -x "$DCG" ]; then
+	echo "no DCG binary at $DCG; run experiments/bench.sh or build it with cmake" >&2
+	exit 1
+fi
 
 say() {
 	printf '\n\033[1m==> %s\033[0m\n' "$*"
@@ -58,7 +64,7 @@ for variant in "${VARIANTS[@]}"; do
 done
 
 say "ZigBee: DCG codegen + build"
-Dataflow_Code_Generator -d "$SRC" -n "$XDF" -w "$WORK/cpp" \
+"$DCG" -d "$SRC" -n "$XDF" -w "$WORK/cpp" \
 	-s "$CAP" -c "$(nproc)" --opt_sched --silent --orcc
 gcc -O3 -std=gnu11 -x c -I"$WORK/cpp" -c "$NATIVE" -o "$WORK/cpp/native.o"
 g++ -O3 -std=c++11 -Wno-narrowing -I. -c "$WORK/cpp/main.cpp" -o "$WORK/cpp/main.o"
