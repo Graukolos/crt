@@ -193,23 +193,12 @@ pub enum Stmt {
         vars: Vec<VarDef>,
         stmts: Vec<Stmt>,
     },
-    OutputWrite {
-        port: String,
-        expr: Expr,
-    },
-    InputRead {
-        port: String,
-        identifier: String,
-        index: Option<Expr>,
-    },
     Assign {
         const_assign: bool,
         identifier: String,
         indices: Vec<Expr>,
         value: Option<Expr>,
     },
-    Return,
-    TerminateLoop,
 }
 
 #[derive(Debug, Clone)]
@@ -234,17 +223,6 @@ pub enum Expr {
     FsmEnumElement {
         enum_name: String,
         element: String,
-    },
-    PortPreview {
-        port: String,
-        prev_identifier: String,
-        index: Option<Box<Expr>>,
-    },
-    PortSize {
-        port: String,
-    },
-    PortFree {
-        port: String,
     },
     Ternary {
         cond: Box<Expr>,

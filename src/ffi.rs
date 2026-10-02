@@ -32,8 +32,6 @@ pub mod ffi {
         type BlockStatement;
         type WhileStatement;
         type ForeachStatement;
-        type OutputChannelWriteStatement;
-        type InputChannelReadStatement;
         type AssignmentStatement;
         type BaseExpression;
         type Expression;
@@ -41,9 +39,6 @@ pub mod ffi {
         type Literal;
         type Identifier;
         type FSM_Enumeration_Element;
-        type PortPreview;
-        type PortSize;
-        type PortFree;
         type TernaryOperator;
         type ListComprehension;
     }
@@ -203,8 +198,6 @@ pub mod ffi {
         fn as_block(s: &Statement) -> &BlockStatement;
         fn as_while(s: &Statement) -> &WhileStatement;
         fn as_foreach(s: &Statement) -> &ForeachStatement;
-        fn as_output_write(s: &Statement) -> &OutputChannelWriteStatement;
-        fn as_input_read(s: &Statement) -> &InputChannelReadStatement;
         fn as_assignment(s: &Statement) -> &AssignmentStatement;
 
         fn if_cond(x: &IfStatement) -> &Expression;
@@ -236,14 +229,6 @@ pub mod ffi {
         fn foreach_stmt_len(x: &ForeachStatement) -> usize;
         fn foreach_stmt_at(x: &ForeachStatement, i: usize) -> &Statement;
 
-        fn output_write_port(x: &OutputChannelWriteStatement) -> String;
-        fn output_write_expr(x: &OutputChannelWriteStatement) -> &Expression;
-
-        fn input_read_port(x: &InputChannelReadStatement) -> String;
-        fn input_read_identifier(x: &InputChannelReadStatement) -> String;
-        fn input_read_has_index(x: &InputChannelReadStatement) -> bool;
-        fn input_read_index(x: &InputChannelReadStatement) -> &Index;
-
         fn assign_const(x: &AssignmentStatement) -> bool;
         fn assign_identifier(x: &AssignmentStatement) -> String;
         fn assign_index_len(x: &AssignmentStatement) -> usize;
@@ -257,9 +242,6 @@ pub mod ffi {
         fn as_literal(e: &BaseExpression) -> &Literal;
         fn as_identifier(e: &BaseExpression) -> &Identifier;
         fn as_fsm_enum_element(e: &BaseExpression) -> &FSM_Enumeration_Element;
-        fn as_port_preview(e: &BaseExpression) -> &PortPreview;
-        fn as_port_size(e: &BaseExpression) -> &PortSize;
-        fn as_port_free(e: &BaseExpression) -> &PortFree;
         fn as_ternary(e: &BaseExpression) -> &TernaryOperator;
         fn as_list_comprehension(e: &BaseExpression) -> &ListComprehension;
 
@@ -284,14 +266,6 @@ pub mod ffi {
 
         fn fsm_elem_enum_name(x: &FSM_Enumeration_Element) -> String;
         fn fsm_elem_element(x: &FSM_Enumeration_Element) -> String;
-
-        fn port_preview_port(x: &PortPreview) -> String;
-        fn port_preview_prev_identifier(x: &PortPreview) -> String;
-        fn port_preview_has_index(x: &PortPreview) -> bool;
-        fn port_preview_index(x: &PortPreview) -> &Index;
-
-        fn port_size_port(x: &PortSize) -> String;
-        fn port_free_port(x: &PortFree) -> String;
 
         fn ternary_cond(x: &TernaryOperator) -> &Expression;
         fn ternary_then(x: &TernaryOperator) -> &Expression;

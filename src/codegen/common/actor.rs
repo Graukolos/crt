@@ -1,20 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
-use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm, Stmt};
+use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm};
 
 use super::{
-    Priorities, emit_const_expr, emit_expr, emit_stmt, emit_vardefs, fsm_variant, fsm_wrapper,
-    ident, port_field, port_ref, rust_type, var_init, var_rust_type,
+    Hold, Priorities, emit_const_expr, emit_expr, emit_stmt, emit_vardefs, fsm_variant,
+    fsm_wrapper, ident, port_field, port_ref, rust_type, var_init, var_rust_type,
 };
 
 pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
-    if typestate && actor.fsm.is_some() && !typestate_actor(actor, typestate) {
-        eprintln!(
-            "warning: actor {}: 'return' inside an action is unsupported by --typestate; emitting the value-based FSM for this actor",
-            actor.name
-        );
-    }
     if typestate_actor(actor, typestate) {
         return emit_actor_typestate(actor);
     }
@@ -86,7 +80,7 @@ pub fn emit_actor(actor: &Actor, typestate: bool) -> String {
             out,
             "    pub fn init(&mut self) {{\n{}{}    }}\n\n",
             room_snapshots(std::iter::once(init)),
-            emit_action(actor, init, &state, None, Commit::Fallthrough)
+            emit_action(init, &state, None, Commit::Fallthrough, &Hold::default())
         );
     }
 
@@ -109,36 +103,8 @@ fn fsm_states(fsm: &ScheduleFsm) -> BTreeSet<String> {
     states
 }
 
-fn walk_stmts(stmts: &[Stmt], visit: &mut impl FnMut(&Stmt)) {
-    for stmt in stmts {
-        visit(stmt);
-        match stmt {
-            Stmt::If { then, els, .. } => {
-                walk_stmts(then, visit);
-                walk_stmts(els, visit);
-            }
-            Stmt::Block { stmts, .. } | Stmt::While { stmts, .. } | Stmt::Foreach { stmts, .. } => {
-                walk_stmts(stmts, visit);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn stmts_return(stmts: &[Stmt]) -> bool {
-    let mut found = false;
-    walk_stmts(stmts, &mut |stmt| found |= matches!(stmt, Stmt::Return));
-    found
-}
-
 pub fn typestate_actor(actor: &Actor, typestate: bool) -> bool {
-    typestate
-        && actor.fsm.is_some()
-        && !actor
-            .actions
-            .iter()
-            .chain(actor.init.iter())
-            .any(|action| stmts_return(&action.stmts))
+    typestate && actor.fsm.is_some()
 }
 
 pub fn actor_type(actor: &Actor, typestate: bool) -> String {
@@ -250,7 +216,7 @@ fn emit_actor_typestate(actor: &Actor) -> String {
             out,
             "\n    pub fn init(&mut self) {{\n{}{}    }}\n",
             room_snapshots(std::iter::once(init)),
-            emit_action(actor, init, &state, None, Commit::Fallthrough)
+            emit_action(init, &state, None, Commit::Fallthrough, &Hold::default())
         );
     }
     out.push_str("}\n\n");
@@ -262,16 +228,15 @@ fn emit_actor_typestate(actor: &Actor) -> String {
         let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
             format!("{wrapper}::{}", fsm_variant(next))
         });
-        let mut tries = String::new();
-        for i in priorities.order(actor, &reachable) {
-            tries.push_str(&emit_action(
-                actor,
+        let tries = emit_candidates(actor, &priorities, &reachable, |i, hold| {
+            emit_action(
                 reachable[i],
                 &state,
                 None,
                 Commit::Move(nexts[i].as_str()),
-            ));
-        }
+                hold,
+            )
+        });
         let _ = write!(
             out,
             "impl {ty}<{here}> {{\n    fn step(mut self, {COUNTERS}: &mut {counters}) -> ({wrapper}, bool) {{\n{tries}        ({wrapper}::{here}(self), false)\n    }}\n}}\n\n",
@@ -425,14 +390,6 @@ fn avail_counter(prefix: &str, port: &str) -> String {
     format!("{prefix}__avail_{}", port_field(port))
 }
 
-fn stmt_ports(stmts: &[Stmt], touched: &mut BTreeSet<String>) {
-    walk_stmts(stmts, &mut |stmt| {
-        if let Stmt::OutputWrite { port, .. } | Stmt::InputRead { port, .. } = stmt {
-            touched.insert(port.clone());
-        }
-    });
-}
-
 fn child_exprs(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::Paren(inner) => vec![inner],
@@ -448,42 +405,28 @@ fn child_exprs(expr: &Expr) -> Vec<&Expr> {
             .iter()
             .chain(generators.iter().flat_map(|g| [&g.start, &g.end]))
             .collect(),
-        Expr::PortPreview { index, .. } => index.iter().map(AsRef::as_ref).collect(),
-        Expr::Literal { .. }
-        | Expr::FsmEnumElement { .. }
-        | Expr::PortSize { .. }
-        | Expr::PortFree { .. } => Vec::new(),
+        Expr::Literal { .. } | Expr::FsmEnumElement { .. } => Vec::new(),
     }
 }
 
-fn reads_ports_or(expr: &Expr, names: &HashSet<String>) -> bool {
+fn references(expr: &Expr, names: &HashSet<String>) -> bool {
     match expr {
-        Expr::PortPreview { .. } | Expr::PortSize { .. } | Expr::PortFree { .. } => true,
         Expr::Identifier { name, .. } if names.contains(name) => true,
         _ => child_exprs(expr)
             .into_iter()
-            .any(|child| reads_ports_or(child, names)),
+            .any(|child| references(child, names)),
     }
-}
-
-fn guard_time_evaluable(expr: &Expr, locals: &HashSet<String>) -> bool {
-    !reads_ports_or(expr, locals)
 }
 
 pub fn output_burst(actor: &Actor, port: &str) -> Option<String> {
     let state = actor_state(actor);
     let mut counts: Vec<String> = Vec::new();
     for action in actor.actions.iter().chain(actor.init.iter()) {
-        let mut touched = BTreeSet::new();
-        stmt_ports(&action.stmts, &mut touched);
-        if touched.contains(port) {
-            return None;
-        }
         let mut total: Vec<String> = Vec::new();
         for output in action.output_expressions.iter().filter(|o| o.port == port) {
             match &output.repeat {
                 None => total.push(output.expressions.len().to_string()),
-                Some(repeat) if guard_time_evaluable(repeat, &state) => total.push(format!(
+                Some(repeat) if !references(repeat, &state) => total.push(format!(
                     "({} * ({})) as usize",
                     output.expressions.len(),
                     emit_const_expr(repeat)
@@ -503,13 +446,9 @@ pub fn output_burst(actor: &Actor, port: &str) -> Option<String> {
 struct Rates {
     inputs: Vec<(String, String)>,
     outputs: Vec<(String, Option<String>)>,
-    refresh_all: bool,
 }
 
 fn action_rates(action: &Action, state: &HashSet<String>, locals: &HashSet<String>) -> Rates {
-    let mut touched = BTreeSet::new();
-    stmt_ports(&action.stmts, &mut touched);
-
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     for p in &action.input_patterns {
         let count = pattern_token_count(p, state, locals);
@@ -524,7 +463,7 @@ fn action_rates(action: &Action, state: &HashSet<String>, locals: &HashSet<Strin
     for output in &action.output_expressions {
         let count = match &output.repeat {
             None => Some(output.expressions.len().to_string()),
-            Some(repeat) if guard_time_evaluable(repeat, locals) => Some(format!(
+            Some(repeat) if !references(repeat, locals) => Some(format!(
                 "({} * ({})) as usize",
                 output.expressions.len(),
                 emit_expr(repeat, state, &empty)
@@ -546,7 +485,6 @@ fn action_rates(action: &Action, state: &HashSet<String>, locals: &HashSet<Strin
             .into_iter()
             .map(|(port, sum)| (port, sum.map(|parts| parts.join(" + "))))
             .collect(),
-        refresh_all: !touched.is_empty(),
     }
 }
 
@@ -596,32 +534,19 @@ fn emit_schedule(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
     let body = match &actor.fsm {
         None => {
             let candidates: Vec<&Action> = actor.actions.iter().collect();
-            priorities
-                .order(actor, &candidates)
-                .into_iter()
-                .map(|i| emit_action(actor, candidates[i], state, None, Commit::Sched))
-                .collect()
+            emit_candidates(actor, &priorities, &candidates, |i, hold| {
+                emit_action(candidates[i], state, None, Commit::Sched, hold)
+            })
         }
         Some(fsm) => {
-            let mut states = BTreeSet::new();
-            for t in &fsm.transitions {
-                states.insert(t.state.clone());
-            }
             let mut arms = String::new();
-            for s in &states {
+            for s in &fsm_states(fsm) {
                 let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
                     format!("self.state = {ty}State::{};", fsm_variant(next))
                 });
-                let mut tries = String::new();
-                for i in priorities.order(actor, &reachable) {
-                    tries.push_str(&emit_action(
-                        actor,
-                        reachable[i],
-                        state,
-                        Some(&nexts[i]),
-                        Commit::Sched,
-                    ));
-                }
+                let tries = emit_candidates(actor, &priorities, &reachable, |i, hold| {
+                    emit_action(reachable[i], state, Some(&nexts[i]), Commit::Sched, hold)
+                });
                 let _ = write!(
                     arms,
                     "            {ty}State::{} => {{\n{tries}            }}\n",
@@ -636,6 +561,21 @@ fn emit_schedule(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
     out.push_str("            break;\n");
     out.push_str("        }\n");
     out.push_str("        __fired\n");
+    out
+}
+
+fn emit_candidates(
+    actor: &Actor,
+    priorities: &Priorities,
+    candidates: &[&Action],
+    emit: impl Fn(usize, &Hold) -> String,
+) -> String {
+    let order = priorities.order(actor, candidates);
+    let ordered: Vec<&Action> = order.iter().map(|&i| candidates[i]).collect();
+    let (mut out, holds) = priorities.holds(&ordered);
+    for (&i, hold) in order.iter().zip(&holds) {
+        out.push_str(&emit(i, hold));
+    }
     out
 }
 
@@ -684,65 +624,43 @@ fn count_binding(port: &str) -> String {
     format!("__take_{}", port_field(port))
 }
 
-fn sched_tail(actor: &Actor, rates: &Rates) -> String {
-    let mut out = counter_updates(actor, rates, "");
+fn sched_tail(rates: &Rates) -> String {
+    let mut out = counter_updates(rates, "");
     out.push_str("            __fired += 1;\n            continue '__sched;\n");
     out
 }
 
-fn counter_updates(actor: &Actor, rates: &Rates, prefix: &str) -> String {
+fn counter_updates(rates: &Rates, prefix: &str) -> String {
     let mut out = String::new();
-    if rates.refresh_all {
-        for port in &actor.inports {
-            let _ = writeln!(
-                out,
-                "            {} = {}.len();",
-                avail_counter(prefix, &port.name),
-                port_ref(&port.name)
-            );
-        }
-        for port in &actor.outports {
-            let _ = writeln!(
-                out,
-                "            {} = {}.room();",
-                room_snapshot(prefix, &port.name),
-                port_ref(&port.name)
-            );
-        }
-    } else {
-        for (port, _) in &rates.inputs {
+    for (port, _) in &rates.inputs {
+        let _ = writeln!(
+            out,
+            "            {} -= {};",
+            avail_counter(prefix, port),
+            count_binding(port)
+        );
+    }
+    for (port, count) in &rates.outputs {
+        if count.is_some() {
             let _ = writeln!(
                 out,
                 "            {} -= {};",
-                avail_counter(prefix, port),
+                room_snapshot(prefix, port),
                 count_binding(port)
             );
-        }
-        for (port, count) in &rates.outputs {
-            if count.is_some() {
-                let _ = writeln!(
-                    out,
-                    "            {} -= {};",
-                    room_snapshot(prefix, port),
-                    count_binding(port)
-                );
-            } else {
-                let _ = writeln!(
-                    out,
-                    "            {} = {}.room();",
-                    room_snapshot(prefix, port),
-                    port_ref(port)
-                );
-            }
+        } else {
+            let _ = writeln!(
+                out,
+                "            {} = {}.room();",
+                room_snapshot(prefix, port),
+                port_ref(port)
+            );
         }
     }
     out
 }
 
 fn count_bindings(rates: &Rates) -> String {
-    if rates.refresh_all {
-        return String::new();
-    }
     let mut out = String::new();
     for (port, count) in &rates.inputs {
         let _ = writeln!(out, "            let {} = {count};", count_binding(port));
@@ -817,11 +735,11 @@ fn emit_peeks(action: &Action, state: &HashSet<String>, locals: &HashSet<String>
 }
 
 fn emit_action(
-    actor: &Actor,
     action: &Action,
     state: &HashSet<String>,
     fsm_next: Option<&str>,
     commit: Commit<'_>,
+    hold: &Hold,
 ) -> String {
     let mut locals = HashSet::new();
     let mut tokens = HashSet::new();
@@ -835,7 +753,7 @@ fn emit_action(
         locals.insert(v.name.clone());
     }
 
-    let consume = !action.guards.iter().any(|g| reads_ports_or(g, &tokens));
+    let consume = !action.guards.iter().any(|g| references(g, &tokens));
 
     let body = emit_action_body(action, state, fsm_next, !consume);
     let rates = (commit != Commit::Fallthrough).then(|| action_rates(action, state, &locals));
@@ -847,9 +765,9 @@ fn emit_action(
     let tail = match (commit, &rates) {
         (Commit::Move(next), Some(rates)) => format!(
             "{}            return ({next}(self.into_state()), true);\n",
-            counter_updates(actor, rates, &prefix)
+            counter_updates(rates, &prefix)
         ),
-        (Commit::Sched, Some(rates)) => sched_tail(actor, rates),
+        (Commit::Sched, Some(rates)) => sched_tail(rates),
         _ => String::new(),
     };
     let bindings = rates.as_ref().map(count_bindings).unwrap_or_default();
@@ -867,55 +785,83 @@ fn emit_action(
         )
     };
 
-    let mut conds: Vec<String> = Vec::new();
-    if let Some(rates) = &rates {
+    let (mut entry, room) =
+        firing_conditions(action, state, &locals, rates.as_ref(), &prefix, hold);
+    if consume && let Some(guard) = &guard {
+        entry.push(guard.clone());
+    }
+
+    let recvs = if consume {
+        emit_recvs(action, state, &locals)
+    } else {
+        String::new()
+    };
+    let fire = format!("{bindings}{recvs}{body}{tail}");
+    let fire = if room.is_empty() {
+        fire
+    } else {
+        let on_blocked = hold
+            .own
+            .as_ref()
+            .map(|f| format!(" else {{\n            {f} = true;\n        }}"))
+            .unwrap_or_default();
+        format!(
+            "        if {} {{\n{fire}        }}{on_blocked}\n",
+            room.join(" && ")
+        )
+    };
+
+    let inner = if consume {
+        fire
+    } else {
+        let peeks = emit_peeks(action, state, &locals);
+        let guard = guard.as_deref().unwrap_or("true");
+        format!("{peeks}            if {guard} {{\n{fire}            }}\n")
+    };
+
+    if entry.is_empty() {
+        if consume && action.vars.is_empty() && bindings.is_empty() && room.is_empty() {
+            return inner;
+        }
+        return format!("        {{\n{inner}        }}\n");
+    }
+    format!("        if {} {{\n{inner}        }}\n", entry.join(" && "))
+}
+
+fn firing_conditions(
+    action: &Action,
+    state: &HashSet<String>,
+    locals: &HashSet<String>,
+    rates: Option<&Rates>,
+    prefix: &str,
+    hold: &Hold,
+) -> (Vec<String>, Vec<String>) {
+    let mut entry: Vec<String> = hold.blocked_by.iter().map(|f| format!("!{f}")).collect();
+    let mut room: Vec<String> = Vec::new();
+    if let Some(rates) = rates {
         for (port, count) in &rates.inputs {
-            conds.push(format!("{} >= {count}", avail_counter(&prefix, port)));
+            entry.push(format!("{} >= {count}", avail_counter(prefix, port)));
         }
         for (port, count) in &rates.outputs {
-            match count {
-                Some(count) => conds.push(format!("{} >= {count}", room_snapshot(&prefix, port))),
-                None => conds.push(format!("{} >= 1", room_snapshot(&prefix, port))),
-            }
+            let needed = count.as_deref().unwrap_or("1");
+            room.push(format!("{} >= {needed}", room_snapshot(prefix, port)));
         }
     } else {
-        conds.extend(action.input_patterns.iter().map(|p| {
+        entry.extend(action.input_patterns.iter().map(|p| {
             format!(
                 "{}.avail({})",
                 port_ref(&p.port),
-                pattern_token_count(p, state, &locals)
+                pattern_token_count(p, state, locals)
             )
         }));
         let mut produced = BTreeSet::new();
         for output in &action.output_expressions {
             if produced.insert(output.port.clone()) {
-                conds.push(room_snapshot("", &output.port));
+                room.push(room_snapshot("", &output.port));
             }
         }
     }
-    if consume && let Some(guard) = &guard {
-        conds.push(guard.clone());
-    }
-
-    if conds.is_empty() {
-        if action.vars.is_empty() && bindings.is_empty() {
-            return format!("{body}{tail}");
-        }
-        return format!("        {{\n{bindings}{body}{tail}        }}\n");
-    }
-    let avail = conds.join(" && ");
-
-    if consume {
-        let recvs = emit_recvs(action, state, &locals);
-        return format!("        if {avail} {{\n{bindings}{recvs}{body}{tail}        }}\n");
-    }
-
-    let peeks = emit_peeks(action, state, &locals);
-    let guarded = match &guard {
-        Some(guard) => format!("if {guard} {{\n{body}{tail}            }}"),
-        None => format!("{{\n{body}{tail}            }}"),
-    };
-    format!("        if {avail} {{\n{bindings}{peeks}            {guarded}\n        }}\n")
+    (entry, room)
 }
 
 fn emit_action_body(

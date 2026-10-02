@@ -330,22 +330,6 @@ fn convert_stmt(s: &ffi::Statement) -> Stmt {
                 }),
             }
         }
-        5 => {
-            let x = ffi::as_output_write(s);
-            Stmt::OutputWrite {
-                port: ffi::output_write_port(x),
-                expr: convert_expression(ffi::output_write_expr(x)),
-            }
-        }
-        6 => {
-            let x = ffi::as_input_read(s);
-            Stmt::InputRead {
-                port: ffi::input_read_port(x),
-                identifier: ffi::input_read_identifier(x),
-                index: ffi::input_read_has_index(x)
-                    .then(|| convert_index(ffi::input_read_index(x))),
-            }
-        }
         7 => {
             let x = ffi::as_assignment(s);
             Stmt::Assign {
@@ -357,8 +341,7 @@ fn convert_stmt(s: &ffi::Statement) -> Stmt {
                 value: ffi::assign_has_value(x).then(|| convert_expression(ffi::assign_value(x))),
             }
         }
-        8 => Stmt::Return,
-        _ => Stmt::TerminateLoop,
+        kind => unreachable!("the parser of DCG produces no statement of kind {kind}"),
     }
 }
 
@@ -416,21 +399,6 @@ fn convert_base_expression(e: &ffi::BaseExpression) -> Expr {
                 element: ffi::fsm_elem_element(x),
             }
         }
-        5 => {
-            let x = ffi::as_port_preview(e);
-            Expr::PortPreview {
-                port: ffi::port_preview_port(x),
-                prev_identifier: ffi::port_preview_prev_identifier(x),
-                index: ffi::port_preview_has_index(x)
-                    .then(|| Box::new(convert_index(ffi::port_preview_index(x)))),
-            }
-        }
-        6 => Expr::PortSize {
-            port: ffi::port_size_port(ffi::as_port_size(e)),
-        },
-        7 => Expr::PortFree {
-            port: ffi::port_free_port(ffi::as_port_free(e)),
-        },
         8 => {
             let x = ffi::as_ternary(e);
             Expr::Ternary {
@@ -439,7 +407,7 @@ fn convert_base_expression(e: &ffi::BaseExpression) -> Expr {
                 els: Box::new(convert_expression(ffi::ternary_else(x))),
             }
         }
-        _ => {
+        9 => {
             let x = ffi::as_list_comprehension(e);
             Expr::ListComprehension {
                 expressions: collect(ffi::listcomp_expr_len(x), |i| {
@@ -450,5 +418,6 @@ fn convert_base_expression(e: &ffi::BaseExpression) -> Expr {
                 }),
             }
         }
+        kind => unreachable!("the parser of DCG produces no expression of kind {kind}"),
     }
 }

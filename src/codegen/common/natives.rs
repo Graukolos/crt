@@ -120,21 +120,80 @@ fn wrapper_call_args(params: &[crate::ast::Parameter]) -> String {
         .join(", ")
 }
 
-fn c_type(t: &Type) -> String {
-    if t.name == "bool" {
-        return "core::ffi::c_int".to_string();
+pub fn check_natives(program: &Program<'_>) -> std::io::Result<()> {
+    let signatures = program
+        .units
+        .iter()
+        .flat_map(|u| &u.native_functions)
+        .map(|f| (&f.name, f.parameters.as_slice(), Some(&f.ret_type)))
+        .chain(program.actors.values().flat_map(|a| {
+            a.native_functions
+                .iter()
+                .map(|f| (&f.name, f.parameters.as_slice(), Some(&f.ret_type)))
+        }))
+        .chain(
+            program
+                .units
+                .iter()
+                .flat_map(|u| &u.native_procedures)
+                .chain(program.actors.values().flat_map(|a| &a.native_procedures))
+                .map(|p| (&p.name, p.parameters.as_slice(), None)),
+        );
+
+    let mut offenders = Vec::new();
+    for (name, params, ret) in signatures {
+        let unsupported: Vec<String> = params
+            .iter()
+            .map(|p| (p.name.as_str(), &p.typ))
+            .chain(ret.map(|t| ("return value", t)))
+            .filter(|(_, t)| !c_compatible(t))
+            .map(|(what, t)| format!("{what}: {}", t.name))
+            .collect();
+        if !unsupported.is_empty() {
+            offenders.push(format!("{name} ({})", unsupported.join(", ")));
+        }
     }
-    if t.list.is_some() {
-        return "core::ffi::c_int".to_string();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "native functions with types that cannot cross the C boundary: {}",
+            offenders.join("; ")
+        ),
+    ))
+}
+
+fn c_compatible(t: &Type) -> bool {
+    t.list.is_none()
+        && matches!(
+            t.name.as_str(),
+            "int" | "uint" | "bool" | "float" | "double" | "half"
+        )
+}
+
+fn c_type(t: &Type) -> String {
+    let bits = t.size.as_ref().and_then(|e| eval_lit(e));
+    match t.name.as_str() {
+        "bool" => return "core::ffi::c_int".to_string(),
+        "double" => return "core::ffi::c_double".to_string(),
+        "float" | "half" => {
+            return if bits.is_some_and(|b| b > 32) {
+                "core::ffi::c_double".to_string()
+            } else {
+                "core::ffi::c_float".to_string()
+            };
+        }
+        _ => {}
     }
     let unsigned = t.name.starts_with("uint");
-    let bits = t.size.as_ref().and_then(|e| eval_lit(e)).unwrap_or(32);
-    let base = match bits {
+    let base = match bits.unwrap_or(32) {
         0..=8 => {
             if unsigned {
                 "c_uchar"
             } else {
-                "c_char"
+                "c_schar"
             }
         }
         9..=16 => {

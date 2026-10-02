@@ -16,8 +16,8 @@ use proc_macro2::TokenStream;
 
 use crate::ast::{Actor, NativeFunction, NativeProcedure, Unit};
 use crate::codegen::common::{
-    CHAN_MOD, actor_mod, chan_use, check_no_fanout, check_single_producer, emit_actor,
-    emit_chan_file, emit_shared_decls,
+    CHAN_MOD, actor_mod, chan_use, check_natives, check_no_fanout, check_single_producer,
+    emit_actor, emit_chan_file, emit_shared_decls,
 };
 use crate::network_ffi::ffi::Network;
 
@@ -145,6 +145,7 @@ pub fn generate(
     let spec = backend.spec();
 
     check_no_fanout(program)?;
+    check_natives(program)?;
     if spec.single_producer {
         check_single_producer(program)?;
     }

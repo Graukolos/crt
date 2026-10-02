@@ -1,12 +1,21 @@
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
 use crate::ast::{Action, Actor};
 
 pub struct Priorities {
-    edges: Vec<(String, String)>,
+    edges: BTreeSet<(String, String)>,
+}
+
+#[derive(Default)]
+pub struct Hold {
+    pub own: Option<String>,
+    pub blocked_by: Vec<String>,
 }
 
 impl Priorities {
     pub fn new(actor: &Actor) -> Self {
-        let mut edges: Vec<(String, String)> = Vec::new();
+        let mut edges: BTreeSet<(String, String)> = BTreeSet::new();
         for chain in &actor.priorities {
             let resolved: Vec<Vec<&str>> = chain
                 .order
@@ -27,25 +36,21 @@ impl Priorities {
                 for lows in &resolved[rank + 1..] {
                     for high in highs {
                         for low in lows {
-                            if high == low {
-                                continue;
-                            }
-                            let pair = ((*high).to_string(), (*low).to_string());
-                            if !edges.contains(&pair) {
-                                edges.push(pair);
+                            if high != low {
+                                edges.insert(((*high).to_string(), (*low).to_string()));
                             }
                         }
                     }
                 }
             }
         }
-        Self { edges }
+        Self {
+            edges: transitive_closure(edges),
+        }
     }
 
     fn outranks(&self, high: &str, low: &str) -> bool {
-        self.edges
-            .iter()
-            .any(|(h, l)| h.as_str() == high && l.as_str() == low)
+        self.edges.contains(&(high.to_string(), low.to_string()))
     }
 
     pub fn order(&self, actor: &Actor, candidates: &[&Action]) -> Vec<usize> {
@@ -77,6 +82,48 @@ impl Priorities {
             }
         }
         ordered
+    }
+
+    pub fn holds(&self, ordered: &[&Action]) -> (String, Vec<Hold>) {
+        let flag = |pos: usize| format!("__held_{pos}");
+        let mut decls = String::new();
+        let mut holds = Vec::with_capacity(ordered.len());
+        for (pos, action) in ordered.iter().enumerate() {
+            let own = ordered[pos + 1..]
+                .iter()
+                .any(|low| self.outranks(&action.name, &low.name))
+                .then(|| flag(pos));
+            if let Some(own) = &own {
+                let _ = writeln!(decls, "            let mut {own} = false;");
+            }
+            let blocked_by = ordered[..pos]
+                .iter()
+                .enumerate()
+                .filter(|(_, high)| self.outranks(&high.name, &action.name))
+                .map(|(i, _)| flag(i))
+                .collect();
+            holds.push(Hold { own, blocked_by });
+        }
+        (decls, holds)
+    }
+}
+
+fn transitive_closure(mut edges: BTreeSet<(String, String)>) -> BTreeSet<(String, String)> {
+    loop {
+        let implied: Vec<(String, String)> = edges
+            .iter()
+            .flat_map(|(a, b)| {
+                edges
+                    .iter()
+                    .filter(move |(c, d)| c == b && d != a)
+                    .map(move |(_, d)| (a.clone(), d.clone()))
+            })
+            .filter(|edge| !edges.contains(edge))
+            .collect();
+        if implied.is_empty() {
+            return edges;
+        }
+        edges.extend(implied);
     }
 }
 

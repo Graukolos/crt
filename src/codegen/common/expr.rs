@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use crate::ast::{Expr, Generator, Stmt, VarDef};
 
-use super::{fsm_variant, ident, port_ref, rust_type, var_default, var_rust_type};
+use super::{fsm_variant, ident, rust_type, var_default, var_rust_type};
 
 pub fn emit_const_expr(expr: &Expr) -> String {
     emit_expr(expr, &HashSet::new(), &HashSet::new())
@@ -120,18 +120,6 @@ pub fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>)
             }
             out
         }
-        Stmt::OutputWrite { port, expr } => format!(
-            "            {}.push_back({});\n",
-            port_ref(port),
-            emit_expr(expr, state, locals)
-        ),
-        Stmt::InputRead {
-            port, identifier, ..
-        } => format!(
-            "            let {} = {}.recv();\n",
-            ident(identifier),
-            port_ref(port)
-        ),
         Stmt::Assign {
             identifier,
             indices,
@@ -150,8 +138,6 @@ pub fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>)
                 None => String::new(),
             }
         }
-        Stmt::Return => "            return false;\n".to_string(),
-        Stmt::TerminateLoop => "            break;\n".to_string(),
     }
 }
 
@@ -263,16 +249,6 @@ pub fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>)
         Expr::FsmEnumElement { enum_name, element } => {
             format!("{}::{}", ident(enum_name), fsm_variant(element))
         }
-        Expr::PortPreview { port, index, .. } => match index {
-            Some(index) => format!(
-                "{}[({}) as usize]",
-                ident(port),
-                emit_expr(index, state, locals)
-            ),
-            None => format!("{}[0]", ident(port)),
-        },
-        Expr::PortSize { port } => format!("({}.len() as i64)", ident(port)),
-        Expr::PortFree { .. } => "0".to_string(),
         Expr::Ternary { cond, then, els } => format!(
             "if {} {{ {} }} else {{ {} }}",
             emit_expr(cond, state, locals),

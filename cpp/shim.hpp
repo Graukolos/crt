@@ -173,15 +173,9 @@ namespace shim
             return 3;
         if (dynamic_cast<const AST::ForeachStatement *>(&s))
             return 4;
-        if (dynamic_cast<const AST::OutputChannelWriteStatement *>(&s))
-            return 5;
-        if (dynamic_cast<const AST::InputChannelReadStatement *>(&s))
-            return 6;
         if (dynamic_cast<const AST::AssignmentStatement *>(&s))
             return 7;
-        if (dynamic_cast<const AST::ReturnStatement *>(&s))
-            return 8;
-        return 9;
+        return 255;
     }
 
     inline const AST::IfStatement &as_if(const AST::Statement &s) { return static_cast<const AST::IfStatement &>(s); }
@@ -189,8 +183,6 @@ namespace shim
     inline const AST::BlockStatement &as_block(const AST::Statement &s) { return static_cast<const AST::BlockStatement &>(s); }
     inline const AST::WhileStatement &as_while(const AST::Statement &s) { return static_cast<const AST::WhileStatement &>(s); }
     inline const AST::ForeachStatement &as_foreach(const AST::Statement &s) { return static_cast<const AST::ForeachStatement &>(s); }
-    inline const AST::OutputChannelWriteStatement &as_output_write(const AST::Statement &s) { return static_cast<const AST::OutputChannelWriteStatement &>(s); }
-    inline const AST::InputChannelReadStatement &as_input_read(const AST::Statement &s) { return static_cast<const AST::InputChannelReadStatement &>(s); }
     inline const AST::AssignmentStatement &as_assignment(const AST::Statement &s) { return static_cast<const AST::AssignmentStatement &>(s); }
 
     SHIM_PTR(if_cond, Expression, IfStatement, condition)
@@ -213,14 +205,6 @@ namespace shim
     SHIM_VEC(foreach_var_len, foreach_var_at, VarDefinition, ForeachStatement, vars)
     SHIM_VEC(foreach_stmt_len, foreach_stmt_at, Statement, ForeachStatement, statements)
 
-    SHIM_STR(output_write_port, OutputChannelWriteStatement, x.port.name)
-    SHIM_PTR(output_write_expr, Expression, OutputChannelWriteStatement, expr)
-
-    SHIM_STR(input_read_port, InputChannelReadStatement, x.port.name)
-    SHIM_STR(input_read_identifier, InputChannelReadStatement, x.identifier.name)
-    SHIM_HAS(input_read_has_index, InputChannelReadStatement, index)
-    SHIM_PTR(input_read_index, Index, InputChannelReadStatement, index)
-
     SHIM_BOOL(assign_const, AssignmentStatement, x.constasgn)
     SHIM_STR(assign_identifier, AssignmentStatement, x.identifier.name)
     SHIM_VEC(assign_index_len, assign_index_at, Index, AssignmentStatement, indices)
@@ -239,15 +223,11 @@ namespace shim
             return 3;
         if (dynamic_cast<const AST::FSM_Enumeration_Element *>(&e))
             return 4;
-        if (dynamic_cast<const AST::PortPreview *>(&e))
-            return 5;
-        if (dynamic_cast<const AST::PortSize *>(&e))
-            return 6;
-        if (dynamic_cast<const AST::PortFree *>(&e))
-            return 7;
         if (dynamic_cast<const AST::TernaryOperator *>(&e))
             return 8;
-        return 9;
+        if (dynamic_cast<const AST::ListComprehension *>(&e))
+            return 9;
+        return 255;
     }
 
     inline const AST::Expression &as_expression(const AST::BaseExpression &e) { return static_cast<const AST::Expression &>(e); }
@@ -255,9 +235,6 @@ namespace shim
     inline const AST::Literal &as_literal(const AST::BaseExpression &e) { return static_cast<const AST::Literal &>(e); }
     inline const AST::Identifier &as_identifier(const AST::BaseExpression &e) { return static_cast<const AST::Identifier &>(e); }
     inline const AST::FSM_Enumeration_Element &as_fsm_enum_element(const AST::BaseExpression &e) { return static_cast<const AST::FSM_Enumeration_Element &>(e); }
-    inline const AST::PortPreview &as_port_preview(const AST::BaseExpression &e) { return static_cast<const AST::PortPreview &>(e); }
-    inline const AST::PortSize &as_port_size(const AST::BaseExpression &e) { return static_cast<const AST::PortSize &>(e); }
-    inline const AST::PortFree &as_port_free(const AST::BaseExpression &e) { return static_cast<const AST::PortFree &>(e); }
     inline const AST::TernaryOperator &as_ternary(const AST::BaseExpression &e) { return static_cast<const AST::TernaryOperator &>(e); }
     inline const AST::ListComprehension &as_list_comprehension(const AST::BaseExpression &e) { return static_cast<const AST::ListComprehension &>(e); }
 
@@ -281,14 +258,6 @@ namespace shim
 
     SHIM_STR(fsm_elem_enum_name, FSM_Enumeration_Element, x.enum_name)
     SHIM_STR(fsm_elem_element, FSM_Enumeration_Element, x.enum_element)
-
-    SHIM_STR(port_preview_port, PortPreview, x.port)
-    SHIM_STR(port_preview_prev_identifier, PortPreview, x.prev_identifier)
-    SHIM_HAS(port_preview_has_index, PortPreview, index)
-    SHIM_PTR(port_preview_index, Index, PortPreview, index)
-
-    SHIM_STR(port_size_port, PortSize, x.port)
-    SHIM_STR(port_free_port, PortFree, x.port)
 
     SHIM_PTR(ternary_cond, Expression, TernaryOperator, cond)
     SHIM_PTR(ternary_then, Expression, TernaryOperator, ifblock)
