@@ -274,13 +274,61 @@ fn emit_actor_typestate(actor: &Actor) -> String {
         }
         let _ = write!(
             out,
-            "impl {ty}<{here}> {{\n    fn step(mut self) -> ({wrapper}, bool) {{\n{}{tries}        ({wrapper}::{here}(self), false)\n    }}\n}}\n\n",
-            room_snapshots(reachable.into_iter())
+            "impl {ty}<{here}> {{\n    fn step(mut self, {COUNTERS}: &mut {counters}) -> ({wrapper}, bool) {{\n{tries}        ({wrapper}::{here}(self), false)\n    }}\n}}\n\n",
+            counters = counters_type(&actor.name)
         );
     }
 
+    out.push_str(&emit_counters_struct(actor));
     out.push_str(&emit_fsm_wrapper(actor, &states));
     out
+}
+
+const COUNTERS: &str = "__c";
+
+fn counters_type(name: &str) -> String {
+    format!("{}Counters", ident(name))
+}
+
+fn emit_counters_struct(actor: &Actor) -> String {
+    let fields = actor
+        .inports
+        .iter()
+        .map(|p| avail_counter("", &p.name))
+        .chain(actor.outports.iter().map(|p| room_snapshot("", &p.name)))
+        .fold(String::new(), |mut acc, field| {
+            let _ = writeln!(acc, "    {field}: usize,");
+            acc
+        });
+    format!(
+        "pub struct {} {{\n{fields}}}\n\n",
+        counters_type(&actor.name)
+    )
+}
+
+fn counters_init(actor: &Actor) -> String {
+    let fields = actor
+        .inports
+        .iter()
+        .map(|p| {
+            format!(
+                "            {}: self.{}_mut().len(),\n",
+                avail_counter("", &p.name),
+                port_field(&p.name)
+            )
+        })
+        .chain(actor.outports.iter().map(|p| {
+            format!(
+                "            {}: self.{}_mut().room(),\n",
+                room_snapshot("", &p.name),
+                port_field(&p.name)
+            )
+        }))
+        .collect::<String>();
+    format!(
+        "        let mut {COUNTERS} = {} {{\n{fields}        }};\n",
+        counters_type(&actor.name)
+    )
 }
 
 fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
@@ -324,12 +372,15 @@ fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
 
     let _ = write!(
         out,
-        "    pub fn fire(&mut self) -> bool {{\n        let (__next, __fired) = match core::mem::replace(self, Self::__Moving) {{\n{}            Self::__Moving => unreachable!(),\n        }};\n        *self = __next;\n        __fired\n    }}\n",
-        dispatch("__s.step()")
+        "    fn fire(&mut self, {COUNTERS}: &mut {}) -> bool {{\n        let (__next, __fired) = match core::mem::replace(self, Self::__Moving) {{\n{}            Self::__Moving => unreachable!(),\n        }};\n        *self = __next;\n        __fired\n    }}\n",
+        counters_type(&actor.name),
+        dispatch(&format!("__s.step({COUNTERS})"))
     );
 
-    out.push_str(
-        "\n    pub fn schedule(&mut self) -> usize {\n        let mut __fired = 0usize;\n        while __fired < FIRE_BUDGET && self.fire() {\n            __fired += 1;\n        }\n        __fired\n    }\n",
+    let _ = write!(
+        out,
+        "\n    pub fn schedule(&mut self) -> usize {{\n{}        let mut __fired = 0usize;\n        while __fired < FIRE_BUDGET && self.fire(&mut {COUNTERS}) {{\n            __fired += 1;\n        }}\n        __fired\n    }}\n",
+        counters_init(actor)
     );
 
     for (name, port_ty) in port_types(actor) {
@@ -366,12 +417,12 @@ pub fn port_types(actor: &Actor) -> Vec<(String, String)> {
     ins.chain(outs).collect()
 }
 
-fn room_snapshot(port: &str) -> String {
-    format!("__room_{}", port_field(port))
+fn room_snapshot(prefix: &str, port: &str) -> String {
+    format!("{prefix}__room_{}", port_field(port))
 }
 
-fn avail_counter(port: &str) -> String {
-    format!("__avail_{}", port_field(port))
+fn avail_counter(prefix: &str, port: &str) -> String {
+    format!("{prefix}__avail_{}", port_field(port))
 }
 
 fn stmt_ports(stmts: &[Stmt], touched: &mut BTreeSet<String>) {
@@ -511,7 +562,7 @@ fn room_snapshots<'a>(actions: impl Iterator<Item = &'a Action>) -> String {
         let _ = writeln!(
             out,
             "        let {} = {}.has_room();",
-            room_snapshot(&port),
+            room_snapshot("", &port),
             port_ref(&port)
         );
     }
@@ -527,7 +578,7 @@ fn emit_schedule(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
         let _ = writeln!(
             out,
             "        let mut {} = {}.len();",
-            avail_counter(&port.name),
+            avail_counter("", &port.name),
             port_ref(&port.name)
         );
     }
@@ -535,7 +586,7 @@ fn emit_schedule(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
         let _ = writeln!(
             out,
             "        let mut {} = {}.room();",
-            room_snapshot(&port.name),
+            room_snapshot("", &port.name),
             port_ref(&port.name)
         );
     }
@@ -634,13 +685,19 @@ fn count_binding(port: &str) -> String {
 }
 
 fn sched_tail(actor: &Actor, rates: &Rates) -> String {
+    let mut out = counter_updates(actor, rates, "");
+    out.push_str("            __fired += 1;\n            continue '__sched;\n");
+    out
+}
+
+fn counter_updates(actor: &Actor, rates: &Rates, prefix: &str) -> String {
     let mut out = String::new();
     if rates.refresh_all {
         for port in &actor.inports {
             let _ = writeln!(
                 out,
                 "            {} = {}.len();",
-                avail_counter(&port.name),
+                avail_counter(prefix, &port.name),
                 port_ref(&port.name)
             );
         }
@@ -648,7 +705,7 @@ fn sched_tail(actor: &Actor, rates: &Rates) -> String {
             let _ = writeln!(
                 out,
                 "            {} = {}.room();",
-                room_snapshot(&port.name),
+                room_snapshot(prefix, &port.name),
                 port_ref(&port.name)
             );
         }
@@ -657,7 +714,7 @@ fn sched_tail(actor: &Actor, rates: &Rates) -> String {
             let _ = writeln!(
                 out,
                 "            {} -= {};",
-                avail_counter(port),
+                avail_counter(prefix, port),
                 count_binding(port)
             );
         }
@@ -666,20 +723,19 @@ fn sched_tail(actor: &Actor, rates: &Rates) -> String {
                 let _ = writeln!(
                     out,
                     "            {} -= {};",
-                    room_snapshot(port),
+                    room_snapshot(prefix, port),
                     count_binding(port)
                 );
             } else {
                 let _ = writeln!(
                     out,
                     "            {} = {}.room();",
-                    room_snapshot(port),
+                    room_snapshot(prefix, port),
                     port_ref(port)
                 );
             }
         }
     }
-    out.push_str("            __fired += 1;\n            continue '__sched;\n");
     out
 }
 
@@ -782,11 +838,19 @@ fn emit_action(
     let consume = !action.guards.iter().any(|g| reads_ports_or(g, &tokens));
 
     let body = emit_action_body(action, state, fsm_next, !consume);
-    let rates = (commit == Commit::Sched).then(|| action_rates(action, state, &locals));
-    let tail = match commit {
-        Commit::Fallthrough => String::new(),
-        Commit::Move(next) => format!("            return ({next}(self.into_state()), true);\n"),
-        Commit::Sched => sched_tail(actor, rates.as_ref().expect("schedule needs rates")),
+    let rates = (commit != Commit::Fallthrough).then(|| action_rates(action, state, &locals));
+    let prefix = if matches!(commit, Commit::Move(_)) {
+        format!("{COUNTERS}.")
+    } else {
+        String::new()
+    };
+    let tail = match (commit, &rates) {
+        (Commit::Move(next), Some(rates)) => format!(
+            "{}            return ({next}(self.into_state()), true);\n",
+            counter_updates(actor, rates, &prefix)
+        ),
+        (Commit::Sched, Some(rates)) => sched_tail(actor, rates),
+        _ => String::new(),
     };
     let bindings = rates.as_ref().map(count_bindings).unwrap_or_default();
 
@@ -806,12 +870,12 @@ fn emit_action(
     let mut conds: Vec<String> = Vec::new();
     if let Some(rates) = &rates {
         for (port, count) in &rates.inputs {
-            conds.push(format!("{} >= {count}", avail_counter(port)));
+            conds.push(format!("{} >= {count}", avail_counter(&prefix, port)));
         }
         for (port, count) in &rates.outputs {
             match count {
-                Some(count) => conds.push(format!("{} >= {count}", room_snapshot(port))),
-                None => conds.push(format!("{} >= 1", room_snapshot(port))),
+                Some(count) => conds.push(format!("{} >= {count}", room_snapshot(&prefix, port))),
+                None => conds.push(format!("{} >= 1", room_snapshot(&prefix, port))),
             }
         }
     } else {
@@ -825,7 +889,7 @@ fn emit_action(
         let mut produced = BTreeSet::new();
         for output in &action.output_expressions {
             if produced.insert(output.port.clone()) {
-                conds.push(room_snapshot(&output.port));
+                conds.push(room_snapshot("", &output.port));
             }
         }
     }
