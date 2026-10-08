@@ -3,10 +3,32 @@ use std::fmt::Write as _;
 
 use crate::ast::{Expr, Generator, Stmt, VarDef};
 
-use super::{fsm_variant, ident, rust_type, var_default, var_rust_type};
+use super::{fsm_variant, ident, port_field, rust_type, var_default, var_rust_type};
+
+pub struct ActorState {
+    pub names: HashSet<String>,
+    pub receiver: &'static str,
+}
+
+impl ActorState {
+    pub fn none() -> Self {
+        Self {
+            names: HashSet::new(),
+            receiver: "self",
+        }
+    }
+
+    pub fn field(&self, field: &str) -> String {
+        format!("{}.{field}", self.receiver)
+    }
+
+    pub fn port(&self, port: &str) -> String {
+        self.field(&port_field(port))
+    }
+}
 
 pub fn emit_const_expr(expr: &Expr) -> String {
-    emit_expr(expr, &HashSet::new(), &HashSet::new())
+    emit_expr(expr, &ActorState::none(), &HashSet::new())
 }
 
 pub fn emit_function(f: &crate::ast::Function) -> String {
@@ -17,7 +39,7 @@ pub fn emit_function(f: &crate::ast::Function) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     let locals: HashSet<String> = f.parameters.iter().map(|p| p.name.clone()).collect();
-    let body = emit_expr(&f.expr, &HashSet::new(), &locals);
+    let body = emit_expr(&f.expr, &ActorState::none(), &locals);
     format!(
         "fn {}({params}) -> {} {{\n    {body}\n}}\n",
         ident(&f.name),
@@ -36,16 +58,16 @@ pub fn emit_procedure(p: &crate::ast::Procedure) -> String {
     for v in &p.vars {
         locals.insert(v.name.clone());
     }
-    let decls = emit_vardefs(&p.vars, &HashSet::new(), &locals);
+    let decls = emit_vardefs(&p.vars, &ActorState::none(), &locals);
     let body: String = p
         .stmts
         .iter()
-        .map(|s| emit_stmt(s, &HashSet::new(), &locals))
+        .map(|s| emit_stmt(s, &ActorState::none(), &locals))
         .collect();
     format!("fn {}({params}) {{\n{decls}{body}}}\n", ident(&p.name))
 }
 
-pub fn emit_vardefs(vars: &[VarDef], state: &HashSet<String>, locals: &HashSet<String>) -> String {
+pub fn emit_vardefs(vars: &[VarDef], state: &ActorState, locals: &HashSet<String>) -> String {
     let mut out = String::new();
     for v in vars {
         let init = match &v.assign {
@@ -62,7 +84,7 @@ pub fn emit_vardefs(vars: &[VarDef], state: &HashSet<String>, locals: &HashSet<S
     out
 }
 
-pub fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+pub fn emit_stmt(stmt: &Stmt, state: &ActorState, locals: &HashSet<String>) -> String {
     match stmt {
         Stmt::If { cond, then, els } => {
             let then_block: String = then.iter().map(|s| emit_stmt(s, state, locals)).collect();
@@ -144,7 +166,7 @@ pub fn emit_stmt(stmt: &Stmt, state: &HashSet<String>, locals: &HashSet<String>)
 fn emit_scope(
     vars: &[VarDef],
     stmts: &[Stmt],
-    state: &HashSet<String>,
+    state: &ActorState,
     locals: &HashSet<String>,
 ) -> String {
     let mut inner = locals.clone();
@@ -154,7 +176,7 @@ fn emit_scope(
     format!("            {{\n{decls}{body}            }}\n")
 }
 
-fn emit_for_header(g: &Generator, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+fn emit_for_header(g: &Generator, state: &ActorState, locals: &HashSet<String>) -> String {
     format!(
         "            for {} in ({})..=({}) {{\n",
         ident(&g.identifier),
@@ -163,12 +185,7 @@ fn emit_for_header(g: &Generator, state: &HashSet<String>, locals: &HashSet<Stri
     )
 }
 
-fn emit_print(
-    name: &str,
-    args: &[Expr],
-    state: &HashSet<String>,
-    locals: &HashSet<String>,
-) -> String {
+fn emit_print(name: &str, args: &[Expr], state: &ActorState, locals: &HashSet<String>) -> String {
     let macro_name = if name == "println" {
         "println"
     } else {
@@ -202,7 +219,7 @@ fn flatten_concat<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-pub fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+pub fn emit_expr(expr: &Expr, state: &ActorState, locals: &HashSet<String>) -> String {
     match expr {
         Expr::Paren(inner) => format!("({})", emit_expr(inner, state, locals)),
         Expr::BinOp { op, left, right } => format!(
@@ -293,11 +310,11 @@ pub fn emit_expr(expr: &Expr, state: &HashSet<String>, locals: &HashSet<String>)
     }
 }
 
-fn resolve(name: &str, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+fn resolve(name: &str, state: &ActorState, locals: &HashSet<String>) -> String {
     if locals.contains(name) {
         ident(name)
-    } else if state.contains(name) {
-        format!("self.{}", ident(name))
+    } else if state.names.contains(name) {
+        state.field(&ident(name))
     } else {
         ident(name)
     }

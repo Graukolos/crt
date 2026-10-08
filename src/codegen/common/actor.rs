@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use crate::ast::{Action, Actor, Expr, InputPattern, ScheduleFsm};
 
 use super::{
-    Hold, Priorities, emit_const_expr, emit_expr, emit_stmt, emit_vardefs, fsm_variant,
+    ActorState, Hold, Priorities, emit_const_expr, emit_expr, emit_stmt, emit_vardefs, fsm_variant,
     fsm_wrapper, ident, port_field, port_ref, rust_type, var_init, var_rust_type,
 };
 
@@ -160,9 +160,11 @@ fn field_names(actor: &Actor) -> Vec<String> {
 
 fn emit_actor_typestate(actor: &Actor) -> String {
     let ty = ident(&actor.name);
-    let wrapper = fsm_wrapper(&actor.name);
+    let data = format!("{ty}Data");
+    let next = format!("{ty}Next");
     let fsm = actor.fsm.as_ref().expect("typestate requires an fsm");
     let state = actor_state(actor);
+    let view_state = actor_state_via(actor, "self.d");
     let states = fsm_states(fsm);
     let names = field_names(actor);
     let mut out = String::new();
@@ -182,8 +184,7 @@ fn emit_actor_typestate(actor: &Actor) -> String {
     for (name, port_ty) in port_types(actor) {
         fields.push(format!("    pub {}: {port_ty},", port_field(&name)));
     }
-    fields.push("    __state: core::marker::PhantomData<S>,".to_string());
-    let _ = write!(out, "pub struct {ty}<S> {{\n{}\n}}\n\n", fields.join("\n"));
+    let _ = write!(out, "pub struct {data} {{\n{}\n}}\n\n", fields.join("\n"));
 
     let inits = names.iter().fold(String::new(), |mut acc, n| {
         let _ = writeln!(acc, "            {n},");
@@ -191,20 +192,10 @@ fn emit_actor_typestate(actor: &Actor) -> String {
     });
     let _ = write!(
         out,
-        "impl<S> {ty}<S> {{\n    pub fn new({}) -> Self {{\n{}        Self {{\n{inits}            __state: core::marker::PhantomData,\n        }}\n    }}\n\n",
+        "impl {data} {{\n    pub fn new({}) -> Self {{\n{}        Self {{\n{inits}        }}\n    }}\n",
         ctor_params(actor),
         ctor_var_lets(actor)
     );
-
-    let moves = names.iter().fold(String::new(), |mut acc, n| {
-        let _ = writeln!(acc, "            {n}: self.{n},");
-        acc
-    });
-    let _ = write!(
-        out,
-        "    fn into_state<__T>(self) -> {ty}<__T> {{\n        {ty} {{\n{moves}            __state: core::marker::PhantomData,\n        }}\n    }}\n"
-    );
-
     if let Some(init) = &actor.init {
         for pattern in &init.input_patterns {
             eprintln!(
@@ -221,17 +212,22 @@ fn emit_actor_typestate(actor: &Actor) -> String {
     }
     out.push_str("}\n\n");
 
+    let _ = write!(
+        out,
+        "pub struct {ty}<'a, S> {{\n    d: &'a mut {data},\n    __state: core::marker::PhantomData<S>,\n}}\n\n\
+         impl<'a, S> {ty}<'a, S> {{\n    fn into_state<__T>(self) -> {ty}<'a, __T> {{\n        {ty} {{ d: self.d, __state: core::marker::PhantomData }}\n    }}\n}}\n\n"
+    );
+
     let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
     let priorities = Priorities::new(actor);
     for s in &states {
         let here = fsm_variant(s);
-        let (reachable, nexts) = state_candidates(fsm, s, lookup, |next| {
-            format!("{wrapper}::{}", fsm_variant(next))
-        });
+        let (reachable, nexts) =
+            state_candidates(fsm, s, lookup, |n| format!("{next}::{}", fsm_variant(n)));
         let tries = emit_candidates(actor, &priorities, &reachable, |i, hold| {
             emit_action(
                 reachable[i],
-                &state,
+                &view_state,
                 None,
                 Commit::Move(nexts[i].as_str()),
                 hold,
@@ -239,10 +235,17 @@ fn emit_actor_typestate(actor: &Actor) -> String {
         });
         let _ = write!(
             out,
-            "impl {ty}<{here}> {{\n    fn step(mut self, {COUNTERS}: &mut {counters}) -> ({wrapper}, bool) {{\n{tries}        ({wrapper}::{here}(self), false)\n    }}\n}}\n\n",
+            "impl<'a> {ty}<'a, {here}> {{\n    fn step(mut self, {COUNTERS}: &mut {counters}) -> ({next}<'a>, bool) {{\n{tries}        ({next}::{here}(self), false)\n    }}\n}}\n\n",
             counters = counters_type(&actor.name)
         );
     }
+
+    let variants = states.iter().fold(String::new(), |mut acc, s| {
+        let v = fsm_variant(s);
+        let _ = writeln!(acc, "    {v}({ty}<'a, {v}>),");
+        acc
+    });
+    let _ = write!(out, "pub enum {next}<'a> {{\n{variants}}}\n\n");
 
     out.push_str(&emit_counters_struct(actor));
     out.push_str(&emit_fsm_wrapper(actor, &states));
@@ -298,48 +301,52 @@ fn counters_init(actor: &Actor) -> String {
 
 fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
     let ty = ident(&actor.name);
+    let data = format!("{ty}Data");
+    let next = format!("{ty}Next");
+    let tag = format!("{ty}Tag");
     let wrapper = fsm_wrapper(&actor.name);
     let fsm = actor.fsm.as_ref().expect("typestate requires an fsm");
     let mut out = String::new();
 
-    let variants = states.iter().fold(String::new(), |mut acc, s| {
-        let v = fsm_variant(s);
-        let _ = writeln!(acc, "    {v}({ty}<{v}>),");
+    let tags = states.iter().fold(String::new(), |mut acc, s| {
+        let _ = writeln!(acc, "    {},", fsm_variant(s));
         acc
     });
     let _ = write!(
         out,
-        "pub enum {wrapper} {{\n{variants}    __Moving,\n}}\n\n"
+        "#[derive(Clone, Copy)]\nenum {tag} {{\n{tags}}}\n\n\
+         pub struct {wrapper} {{\n    data: {data},\n    state: {tag},\n}}\n\n"
     );
 
     let _ = write!(
         out,
-        "impl {wrapper} {{\n    pub fn new({}) -> Self {{\n        Self::{}({ty}::new({}))\n    }}\n\n",
+        "impl {wrapper} {{\n    pub fn new({}) -> Self {{\n        Self {{ data: {data}::new({}), state: {tag}::{} }}\n    }}\n\n",
         ctor_params(actor),
-        fsm_variant(&fsm.initial_state),
-        ctor_args(actor)
+        ctor_args(actor),
+        fsm_variant(&fsm.initial_state)
     );
-
-    let dispatch = |body: &str| -> String {
-        states.iter().fold(String::new(), |mut acc, s| {
-            let _ = writeln!(acc, "            Self::{}(__s) => {body},", fsm_variant(s));
-            acc
-        })
-    };
 
     if actor.init.is_some() {
-        let _ = write!(
-            out,
-            "    pub fn init(&mut self) {{\n        match self {{\n{}            Self::__Moving => {{}}\n        }}\n    }}\n\n",
-            dispatch("__s.init()")
-        );
+        out.push_str("    pub fn init(&mut self) {\n        self.data.init();\n    }\n\n");
     }
 
+    let steps = states.iter().fold(String::new(), |mut acc, s| {
+        let v = fsm_variant(s);
+        let _ = writeln!(
+            acc,
+            "            {tag}::{v} => {ty}::<{v}> {{ d: &mut self.data, __state: core::marker::PhantomData }}.step({COUNTERS}),"
+        );
+        acc
+    });
+    let back = states.iter().fold(String::new(), |mut acc, s| {
+        let v = fsm_variant(s);
+        let _ = writeln!(acc, "            {next}::{v}(_) => {tag}::{v},");
+        acc
+    });
     let _ = write!(
         out,
-        "    fn fire(&mut self, {COUNTERS}: &mut {}) -> bool {{\n        let (__next, __fired) = match core::mem::replace(self, Self::__Moving) {{\n{}            Self::__Moving => unreachable!(),\n        }};\n        *self = __next;\n        __fired\n    }}\n",
-        counters_type(&actor.name),
-        dispatch(&format!("__s.step({COUNTERS})"))
+        "    fn fire(&mut self, {COUNTERS}: &mut {}) -> bool {{\n        let (__next, __fired) = match self.state {{\n{steps}        }};\n        self.state = match __next {{\n{back}        }};\n        __fired\n    }}\n",
+        counters_type(&actor.name)
     );
 
     let _ = write!(
@@ -352,8 +359,7 @@ fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
         let field = port_field(&name);
         let _ = write!(
             out,
-            "\n    pub fn {field}_mut(&mut self) -> &mut {port_ty} {{\n        match self {{\n{}            Self::__Moving => unreachable!(),\n        }}\n    }}\n",
-            dispatch(&format!("&mut __s.{field}"))
+            "\n    pub fn {field}_mut(&mut self) -> &mut {port_ty} {{\n        &mut self.data.{field}\n    }}\n"
         );
     }
     out.push_str("}\n");
@@ -361,13 +367,20 @@ fn emit_fsm_wrapper(actor: &Actor, states: &BTreeSet<String>) -> String {
     out
 }
 
-pub fn actor_state(actor: &Actor) -> HashSet<String> {
-    actor
-        .parameters
-        .iter()
-        .map(|p| p.name.clone())
-        .chain(actor.vars.iter().map(|v| v.name.clone()))
-        .collect()
+pub fn actor_state(actor: &Actor) -> ActorState {
+    actor_state_via(actor, "self")
+}
+
+fn actor_state_via(actor: &Actor, receiver: &'static str) -> ActorState {
+    ActorState {
+        names: actor
+            .parameters
+            .iter()
+            .map(|p| p.name.clone())
+            .chain(actor.vars.iter().map(|v| v.name.clone()))
+            .collect(),
+        receiver,
+    }
 }
 
 pub fn port_types(actor: &Actor) -> Vec<(String, String)> {
@@ -426,7 +439,7 @@ pub fn output_burst(actor: &Actor, port: &str) -> Option<String> {
         for output in action.output_expressions.iter().filter(|o| o.port == port) {
             match &output.repeat {
                 None => total.push(output.expressions.len().to_string()),
-                Some(repeat) if !references(repeat, &state) => total.push(format!(
+                Some(repeat) if !references(repeat, &state.names) => total.push(format!(
                     "({} * ({})) as usize",
                     output.expressions.len(),
                     emit_const_expr(repeat)
@@ -448,7 +461,7 @@ struct Rates {
     outputs: Vec<(String, Option<String>)>,
 }
 
-fn action_rates(action: &Action, state: &HashSet<String>, locals: &HashSet<String>) -> Rates {
+fn action_rates(action: &Action, state: &ActorState, locals: &HashSet<String>) -> Rates {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     for p in &action.input_patterns {
         let count = pattern_token_count(p, state, locals);
@@ -507,7 +520,7 @@ fn room_snapshots<'a>(actions: impl Iterator<Item = &'a Action>) -> String {
     out
 }
 
-fn emit_schedule(actor: &Actor, state: &HashSet<String>, ty: &str) -> String {
+fn emit_schedule(actor: &Actor, state: &ActorState, ty: &str) -> String {
     let lookup = |name: &str| actor.actions.iter().find(|a| a.name == name);
     let priorities = Priorities::new(actor);
 
@@ -598,11 +611,7 @@ fn state_candidates<'a>(
     (actions, nexts)
 }
 
-fn pattern_token_count(
-    p: &InputPattern,
-    state: &HashSet<String>,
-    locals: &HashSet<String>,
-) -> String {
+fn pattern_token_count(p: &InputPattern, state: &ActorState, locals: &HashSet<String>) -> String {
     match &p.repeat {
         Some(repeat) => format!(
             "({} * ({})) as usize",
@@ -624,13 +633,13 @@ fn count_binding(port: &str) -> String {
     format!("__take_{}", port_field(port))
 }
 
-fn sched_tail(rates: &Rates) -> String {
-    let mut out = counter_updates(rates, "");
+fn sched_tail(rates: &Rates, state: &ActorState) -> String {
+    let mut out = counter_updates(rates, state, "");
     out.push_str("            __fired += 1;\n            continue '__sched;\n");
     out
 }
 
-fn counter_updates(rates: &Rates, prefix: &str) -> String {
+fn counter_updates(rates: &Rates, state: &ActorState, prefix: &str) -> String {
     let mut out = String::new();
     for (port, _) in &rates.inputs {
         let _ = writeln!(
@@ -653,7 +662,7 @@ fn counter_updates(rates: &Rates, prefix: &str) -> String {
                 out,
                 "            {} = {}.room();",
                 room_snapshot(prefix, port),
-                port_ref(port)
+                state.port(port)
             );
         }
     }
@@ -673,10 +682,10 @@ fn count_bindings(rates: &Rates) -> String {
     out
 }
 
-fn emit_recvs(action: &Action, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+fn emit_recvs(action: &Action, state: &ActorState, locals: &HashSet<String>) -> String {
     let mut out = String::new();
     for pattern in &action.input_patterns {
-        let port = port_ref(&pattern.port);
+        let port = state.port(&pattern.port);
         match &pattern.repeat {
             Some(repeat) => {
                 let n = format!("__n_{}", port_field(&pattern.port));
@@ -708,7 +717,7 @@ fn emit_recvs(action: &Action, state: &HashSet<String>, locals: &HashSet<String>
     out
 }
 
-fn emit_peeks(action: &Action, state: &HashSet<String>, locals: &HashSet<String>) -> String {
+fn emit_peeks(action: &Action, state: &ActorState, locals: &HashSet<String>) -> String {
     let mut out = String::new();
     for pattern in &action.input_patterns {
         let stride = pattern.ids.len();
@@ -719,14 +728,14 @@ fn emit_peeks(action: &Action, state: &HashSet<String>, locals: &HashSet<String>
                     "            let mut {}: Vec<_> = ({i}..({stride} * ({})) as usize).step_by({stride}).map(|__j| {}.peek(__j)).collect();",
                     ident(id),
                     emit_expr(repeat, state, locals),
-                    port_ref(&pattern.port)
+                    state.port(&pattern.port)
                 );
             } else {
                 let _ = writeln!(
                     out,
                     "            let mut {} = {}.peek({i});",
                     ident(id),
-                    port_ref(&pattern.port)
+                    state.port(&pattern.port)
                 );
             }
         }
@@ -736,7 +745,7 @@ fn emit_peeks(action: &Action, state: &HashSet<String>, locals: &HashSet<String>
 
 fn emit_action(
     action: &Action,
-    state: &HashSet<String>,
+    state: &ActorState,
     fsm_next: Option<&str>,
     commit: Commit<'_>,
     hold: &Hold,
@@ -765,9 +774,9 @@ fn emit_action(
     let tail = match (commit, &rates) {
         (Commit::Move(next), Some(rates)) => format!(
             "{}            return ({next}(self.into_state()), true);\n",
-            counter_updates(rates, &prefix)
+            counter_updates(rates, state, &prefix)
         ),
-        (Commit::Sched, Some(rates)) => sched_tail(rates),
+        (Commit::Sched, Some(rates)) => sched_tail(rates, state),
         _ => String::new(),
     };
     let bindings = rates.as_ref().map(count_bindings).unwrap_or_default();
@@ -830,7 +839,7 @@ fn emit_action(
 
 fn firing_conditions(
     action: &Action,
-    state: &HashSet<String>,
+    state: &ActorState,
     locals: &HashSet<String>,
     rates: Option<&Rates>,
     prefix: &str,
@@ -850,7 +859,7 @@ fn firing_conditions(
         entry.extend(action.input_patterns.iter().map(|p| {
             format!(
                 "{}.avail({})",
-                port_ref(&p.port),
+                state.port(&p.port),
                 pattern_token_count(p, state, locals)
             )
         }));
@@ -866,7 +875,7 @@ fn firing_conditions(
 
 fn emit_action_body(
     action: &Action,
-    state: &HashSet<String>,
+    state: &ActorState,
     fsm_next: Option<&str>,
     pop_inputs: bool,
 ) -> String {
@@ -883,7 +892,7 @@ fn emit_action_body(
                 out,
                 "            for _ in 0..{} {{ {}.pop_front(); }}",
                 pattern_token_count(pattern, state, &locals),
-                port_ref(&pattern.port)
+                state.port(&pattern.port)
             );
         }
     }
@@ -903,13 +912,13 @@ fn emit_action_body(
                     out,
                     "            for __tok in ({}).clone() {{ {}.push_back(__tok); }}",
                     emit_expr(expr, state, &locals),
-                    port_ref(&output.port)
+                    state.port(&output.port)
                 );
             } else {
                 let _ = writeln!(
                     out,
                     "            {}.push_back({});",
-                    port_ref(&output.port),
+                    state.port(&output.port),
                     emit_expr(expr, state, &locals)
                 );
             }
