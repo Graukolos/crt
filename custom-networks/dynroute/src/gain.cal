@@ -1,0 +1,5 @@
+actor gain () int din ==> int out :
+
+	apply : action din:[x] ==> out:[(x * 3) / 2] end
+
+end

@@ -1,0 +1,24 @@
+actor filter () int din ==> int out :
+
+	// delay line z^-1..z^-3
+	int z1;
+	int z2;
+	int z3;
+
+	tap : action din:[x] ==> out:[y]
+	var
+		int y
+	do
+		y := (x * 3 + z1 * 3 + z2 + z3) / 8;
+		z3 := z2;
+		z2 := z1;
+		z1 := x;
+	end
+
+	initialize ==>
+	do
+		z1 := 0;
+		z2 := 0;
+		z3 := 0;
+	end
+end

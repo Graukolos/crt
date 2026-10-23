@@ -1,0 +1,14 @@
+actor update () int e ==> int c :
+
+	int acc;
+
+	update : action e:[d] ==> c:[acc]
+	do
+		acc := acc + d / 8 - acc / 64;
+	end
+
+	initialize ==> c:[0]
+	do
+		acc := 0;
+	end
+end

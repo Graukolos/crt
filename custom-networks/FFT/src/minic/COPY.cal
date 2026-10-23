@@ -1,0 +1,5 @@
+package minic;
+
+actor COPY () int X0 ==> int Y0:
+  action X0:[x0] ==> Y0:[x0] end
+end

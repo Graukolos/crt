@@ -1,0 +1,7 @@
+package common;
+
+import common.constants.*;
+
+actor dup4() int(size=SAMPLE_SZ) inx ==> int(size=SAMPLE_SZ) out1, int(size=SAMPLE_SZ) out2, int(size=SAMPLE_SZ) out3, int(size=SAMPLE_SZ) out4:
+  action inx:[i] ==> out1:[i], out2:[i], out3:[i], out4:[i] end
+end

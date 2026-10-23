@@ -1,0 +1,39 @@
+// sink_sf.cal -- part of 'DigitalFiltering' project
+//
+// Author: 
+// Jani Boutellier (jani.boutellier@ee.oulu.fi)
+// Department of Computer Science and Engineering
+// University of Oulu, Finland
+//
+// Description:
+// The single-precision float signal sink actor.
+// I/O behavior is defined in platform-dependent
+// library that implements native functions.
+//
+// Changelog:
+// - initial version 08/05/2012
+
+package common_sf;
+
+import common.constants.*;
+
+actor sink_sf() float operand_1 ==> :
+
+	@native procedure native_sink_init()
+	end
+
+	@native procedure native_sink_consume_sf(float sample)
+	end
+
+	
+	consume: action operand_1:[ sample ] ==>
+	do
+		native_sink_consume_sf(sample + 128.0);
+	end
+	
+	initialize ==>
+	do
+		native_sink_init();
+	end
+
+end

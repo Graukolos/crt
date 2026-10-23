@@ -1,0 +1,5 @@
+package minic;
+
+actor MulZ () int X0, int X1 ==> int Y0:
+    action X0:[x0], X1:[x1] ==> Y0:[x0 * x1] end
+end

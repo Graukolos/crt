@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<XDF name="DynRoute">
+    <Instance id="src_inst">
+        <Class name="src"/>
+    </Instance>
+    <Instance id="route_inst">
+        <Class name="route"/>
+    </Instance>
+    <Instance id="gain_inst">
+        <Class name="gain"/>
+    </Instance>
+    <Instance id="filter_inst">
+        <Class name="filter"/>
+    </Instance>
+    <Instance id="merge_inst">
+        <Class name="merge"/>
+    </Instance>
+    <Instance id="adapt_inst">
+        <Class name="adapt"/>
+    </Instance>
+    <Instance id="update_inst">
+        <Class name="update"/>
+    </Instance>
+    <Instance id="sink_inst">
+        <Class name="sink"/>
+    </Instance>
+
+    <Connection dst="route_inst" dst-port="tag" src="src_inst" src-port="tag"/>
+    <Connection dst="route_inst" dst-port="data" src="src_inst" src-port="data"/>
+    <Connection dst="adapt_inst" dst-port="ref" src="src_inst" src-port="ref"/>
+    <Connection dst="gain_inst"  dst-port="din" src="route_inst" src-port="fast"/>
+    <Connection dst="filter_inst" dst-port="din" src="route_inst" src-port="prec"/>
+    <Connection dst="merge_inst" dst-port="sel" src="route_inst" src-port="sel"/>
+    <Connection dst="merge_inst" dst-port="fast_in" src="gain_inst" src-port="out"/>
+    <Connection dst="merge_inst" dst-port="prec_in" src="filter_inst" src-port="out"/>
+    <Connection dst="adapt_inst" dst-port="y" src="merge_inst" src-port="y"/>
+    <Connection dst="update_inst" dst-port="e" src="adapt_inst" src-port="e"/>
+    <Connection dst="adapt_inst" dst-port="c" src="update_inst" src-port="c"/>
+    <Connection dst="sink_inst" dst-port="out" src="adapt_inst" src-port="out"/>
+</XDF>

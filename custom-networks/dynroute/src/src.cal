@@ -1,0 +1,48 @@
+actor src () ==> uint tag, int data, int ref :
+
+	@native function src_tag() --> uint end
+
+	@native function src_len() --> uint end
+
+	@native function src_sample() --> int end
+
+	uint n;
+	uint t;
+
+	next_burst : action ==>
+	do
+		t := src_tag();
+		n := src_len();
+	end
+
+	sample : action ==> tag:[t], data:[v], ref:[v]
+	guard
+		n > 0
+	var
+		int v
+	do
+		v := src_sample();
+		n := n - 1;
+	end
+
+	eob : action ==>
+	guard
+		n = 0
+	end
+
+	initialize ==>
+	do
+		n := 0;
+		t := 0;
+	end
+
+	schedule fsm s_new :
+		s_new  ( next_burst ) --> s_send;
+		s_send ( sample )     --> s_send;
+		s_send ( eob )        --> s_new;
+	end
+
+	priority
+		sample > eob;
+	end
+end

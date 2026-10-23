@@ -1,0 +1,41 @@
+// source_sf.cal -- part of 'DigitalFiltering' project
+//
+// Author: 
+// Jani Boutellier (jani.boutellier@ee.oulu.fi)
+// Department of Computer Science and Engineering
+// University of Oulu, Finland
+//
+// Description:
+// The signal source actor.
+// I/O behavior is defined in platform-dependent
+// library that implements native functions.
+//
+// Changelog:
+// - initial version 08/05/2012
+
+package common_sf;
+
+import common.constants.*;
+
+actor source_sf() ==> float result :
+
+	@native procedure native_source_init()
+	end
+
+	@native function native_source_produce_sf() --> float
+	end
+
+	
+	produce: action ==> result : [ sample ]
+	var
+		float sample
+	do
+		sample := native_source_produce_sf() - 128.0;
+	end
+	
+	initialize ==> 
+	do
+		native_source_init();
+	end
+
+end

@@ -1,0 +1,10 @@
+actor adapt () int y, int ref, int c ==> int out, int e :
+
+	step : action y:[v], ref:[r], c:[k] ==> out:[w], e:[r - w]
+	var
+		int w
+	do
+		w := v + (v * k) / 256;
+	end
+
+end

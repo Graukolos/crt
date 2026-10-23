@@ -1,0 +1,12 @@
+actor route () uint tag, int data ==> int fast, int prec, uint sel :
+
+	to_fast : action tag:[t], data:[x] ==> fast:[x], sel:[t]
+	guard
+		t = 0
+	end
+
+	to_prec : action tag:[t], data:[x] ==> prec:[x], sel:[t]
+	guard
+		t > 0
+	end
+end

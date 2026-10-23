@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<XDF name="FIR_monolithic_sf">
+    <Instance id="fir">
+        <Class name="common_sf.fir_sf"/>
+        <Parameter name="H0">
+            <Expr kind="Literal" literal-kind="Real" value="0.14453125"/>
+        </Parameter>
+        <Parameter name="H1">
+            <Expr kind="Literal" literal-kind="Real" value="0.42578125"/>
+        </Parameter>
+    </Instance>
+    <Instance id="source">
+        <Class name="common_sf.source_sf"/>
+    </Instance>
+    <Instance id="sink">
+        <Class name="common_sf.sink_sf"/>
+    </Instance>
+    <Connection dst="fir" dst-port="operand_1" src="source" src-port="result"/>
+    <Connection dst="sink" dst-port="operand_1" src="fir" src-port="result"/>
+</XDF>

@@ -1,0 +1,24 @@
+package minic;
+
+actor PRNTB () int X0 ==> :
+
+uint count := 0;
+
+@native procedure test_exit() end
+
+act1: action X0:[x0] ==>
+guard
+   count < 262144
+do
+   count := count + 1;
+end
+
+act2: action ==>
+guard
+   count = 262144
+do
+   test_exit();
+   count := count + 1;
+end
+
+end

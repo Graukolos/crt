@@ -1,0 +1,5 @@
+package minic;
+
+actor DUP () int X0 ==> int Y0, int Y1:
+  action X0:[x0] ==> Y0:[x0], Y1:[x0] end
+end

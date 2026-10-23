@@ -1,0 +1,12 @@
+actor merge () uint sel, int fast_in, int prec_in ==> int y :
+
+	take_fast : action sel:[s], fast_in:[a] ==> y:[a]
+	guard
+		s = 0
+	end
+
+	take_prec : action sel:[s], prec_in:[b] ==> y:[b]
+	guard
+		s > 0
+	end
+end

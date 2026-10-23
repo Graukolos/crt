@@ -1,0 +1,10 @@
+actor sink () int out ==> :
+
+	@native procedure sink_consume(int v) end
+
+	consume : action out:[v] ==>
+	do
+		sink_consume(v);
+	end
+
+end
